@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, Navigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { api, type DiffOut, type RunDetail, type RunEvent } from "../api/client";
 import {
   AgentOutputDrawer,
@@ -15,6 +15,7 @@ import {
   SearchIcon,
   SpinnerIcon,
 } from "../components/icons";
+import { Markdown } from "../components/Markdown";
 import { Crumb, TopbarShell } from "../components/Topbar";
 import { useToast } from "../components/Toast";
 import { useRunEvents } from "../hooks/useRunEvents";
@@ -133,57 +134,9 @@ function countAdditions(diff: string): { add: number; del: number } {
   return { add, del };
 }
 
-/** `/issue` with no id → jump to the latest run. */
-function IssueRedirect() {
-  const [target, setTarget] = useState<string | null>(null);
-  const [empty, setEmpty] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const runs = await api.listRuns();
-        if (cancelled) return;
-        if (!runs.length) setEmpty(true);
-        else setTarget(`/runs/${runs[0].id}`);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (target) return <Navigate to={target} replace />;
-
-  return (
-    <div className="px-8 py-7">
-      <div className="mx-auto max-w-[720px] rounded-xl border border-line bg-surface p-8 text-center">
-        {error ? (
-          <p className="text-danger-ink">{error}</p>
-        ) : empty ? (
-          <>
-            <h1 className="text-[18px] font-semibold tracking-tight">No runs yet</h1>
-            <p className="mt-2 text-[14px] text-muted">
-              Connect a repository and sync open issues to start a run.
-            </p>
-            <Link to="/repos" className="btn btn-primary mt-5">
-              Go to repositories
-            </Link>
-          </>
-        ) : (
-          <p className="text-muted">Loading latest run…</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
+/** `/issue` now renders IssuesPage (all issues). This component is the run workbench for `/runs/:id`. */
 export function IssuePage() {
   const { id } = useParams();
-  if (!id) return <IssueRedirect />;
   return <IssueRunView runId={Number(id)} />;
 }
 
@@ -408,12 +361,13 @@ function IssueRunView({ runId }: { runId: number }) {
         }
         actions={
           <>
-            <button className="btn btn-ghost btn-sm" onClick={() => void copyLog()}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => void copyLog()}>
               <CopyIcon size={16} />
               Copy log
             </button>
             {(isFailed || isDone) && (
               <button
+                type="button"
                 className="btn btn-primary"
                 disabled={busy || isLive}
                 onClick={() => void retry()}
@@ -423,7 +377,7 @@ function IssueRunView({ runId }: { runId: number }) {
               </button>
             )}
             {isLive && (
-              <button className="btn btn-primary" disabled>
+              <button type="button" className="btn btn-primary" disabled>
                 <PlayIcon size={16} />
                 Running…
               </button>
@@ -489,12 +443,7 @@ function IssueRunView({ runId }: { runId: number }) {
                 </div>
               </div>
               <div className="p-5">
-                <p
-                  className="mb-4 whitespace-pre-wrap text-muted"
-                  style={{ lineHeight: 1.65 }}
-                >
-                  {run.issue_body?.trim() || "No issue body provided."}
-                </p>
+                <Markdown className="mb-4">{run.issue_body}</Markdown>
                 {(run.files_touched || []).length > 0 && (
                   <div className="overflow-hidden rounded-[10px] border border-line bg-canvas">
                     <div className="border-b border-line px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-faint">
@@ -849,7 +798,7 @@ function IssueRunView({ runId }: { runId: number }) {
             <section className="mt-5 overflow-hidden rounded-[14px] border border-line bg-surface">
               <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
                 <h3 className="text-[14px] font-semibold tracking-tight">Diff</h3>
-                <button className="btn btn-ghost btn-sm" onClick={() => void load()}>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>
                   Refresh
                 </button>
               </div>

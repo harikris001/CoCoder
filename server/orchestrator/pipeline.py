@@ -119,8 +119,12 @@ def _structured(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
-def _invoke_agent(agent: Any, user_text: str, *, retries: int = 2) -> dict[str, Any]:
-    """Invoke an agent and extract JSON structured output, with retries."""
+def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[str, Any]:
+    """Invoke an agent and extract JSON structured output, with retries.
+
+    This is a *synchronous* helper — callers from async code should use
+    ``_invoke_agent`` which wraps this in ``asyncio.to_thread``.
+    """
     last_error: Exception | None = None
     prompt = user_text
     for attempt in range(retries + 1):
@@ -146,6 +150,13 @@ def _invoke_agent(agent: Any, user_text: str, *, retries: int = 2) -> dict[str, 
             )
     assert last_error is not None
     raise last_error
+
+
+async def _invoke_agent(agent: Any, user_text: str, *, retries: int = 2) -> dict[str, Any]:
+    """Async wrapper — runs the blocking LLM call in a thread to avoid starving the event loop."""
+    import asyncio
+
+    return await asyncio.to_thread(_invoke_agent_sync, agent, user_text, retries=retries)
 
 
 async def _update_run(run_id: int, **fields: Any) -> None:
@@ -207,7 +218,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
         await _update_run(run_id, stage="pm")
         await _event(run_id, "pm", "PM Agent analyzing issue")
         pm_agent = PMAgent()
-        pm = _invoke_agent(
+        pm = await _invoke_agent(
             pm_agent,
             (
                 f"GitHub issue #{state['issue_number']}: {state['issue_title']}\n\n"
@@ -222,7 +233,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
         await _update_run(run_id, stage="architecture")
         await _event(run_id, "architecture", "Architecture Agent mapping changes")
         arch_agent = ArchitectureAgent()
-        architecture = _invoke_agent(
+        architecture = await _invoke_agent(
             arch_agent,
             (
                 f"Requirements:\n{json.dumps(pm, indent=2)}\n\n"
@@ -236,7 +247,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
         await _update_run(run_id, stage="planner")
         await _event(run_id, "planner", "Task Planner creating tasks")
         planner_agent = TaskPlannerAgent()
-        planner = _invoke_agent(
+        planner = await _invoke_agent(
             planner_agent,
             (
                 f"PM:\n{json.dumps(pm, indent=2)}\n\n"
@@ -283,7 +294,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 else:
                     agent = BackendAgent()
                 configure_tools(workspace, state["repo_db_id"])
-                dev_out = _invoke_agent(agent, prompt)
+                dev_out = await _invoke_agent(agent, prompt)
                 files_touched.extend(dev_out.get("files_modified") or [])
                 files_touched.extend(dev_out.get("files_created") or [])
                 await _event(
@@ -303,7 +314,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
             await _event(run_id, "review", "Reviewer Agent checking changes")
             reviewer = ReviewerAgent()
             configure_tools(workspace, state["repo_db_id"])
-            review = _invoke_agent(
+            review = await _invoke_agent(
                 reviewer,
                 (
                     f"Acceptance criteria:\n{json.dumps(pm.get('acceptance_criteria'))}\n\n"

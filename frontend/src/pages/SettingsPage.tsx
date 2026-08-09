@@ -465,14 +465,14 @@ export function SettingsPage() {
               </span>
             </label>
             <div className="flex flex-wrap gap-2.5">
-              <button className="btn btn-ghost btn-sm" onClick={handleTestGithub}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={handleTestGithub}>
                 Test connection
               </button>
-              <button className="btn btn-primary btn-sm" onClick={handleGithubSave}>
+              <button type="button" className="btn btn-primary btn-sm" onClick={handleGithubSave}>
                 Save token
               </button>
               {mock.github.connected && (
-                <button className="btn btn-ghost btn-sm text-danger-ink" onClick={handleDisconnect}>
+                <button type="button" className="btn btn-ghost btn-sm text-danger-ink" onClick={handleDisconnect}>
                   Disconnect
                 </button>
               )}

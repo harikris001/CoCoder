@@ -81,11 +81,11 @@ export function LandingPage() {
             <BoltIcon className="text-accent" size={22} strokeWidth={2} />
             CoCoder
           </Link>
-          <div className="mr-auto hidden gap-[22px] max-[720px]:hidden">
+          <div className="mr-auto flex gap-[22px] max-[720px]:hidden">
             <a href="#how" className="text-[14px] text-muted transition-colors hover:text-ink">How it works</a>
             <Link to="/dashboard" className="text-[14px] text-muted transition-colors hover:text-ink">Dashboard</Link>
             <Link to="/repos" className="text-[14px] text-muted transition-colors hover:text-ink">Repositories</Link>
-            <Link to="/issue" className="text-[14px] text-muted transition-colors hover:text-ink">Run demo</Link>
+            <Link to="/issue" className="text-[14px] text-muted transition-colors hover:text-ink">Issues</Link>
           </div>
           <Link to="/dashboard" className="btn btn-ghost ml-auto">Sign in</Link>
         </div>
@@ -107,7 +107,7 @@ export function LandingPage() {
               watching your team work should feel like.
             </p>
             <div className="flex flex-wrap gap-3.5">
-              <Link to="/issue" className="btn btn-primary">Try a run</Link>
+              <Link to="/issue" className="btn btn-primary">View Issues</Link>
               <Link to="/repos" className="btn btn-ghost">Browse repos</Link>
             </div>
             <div className="mt-10 flex gap-6 border-t border-line pt-7">

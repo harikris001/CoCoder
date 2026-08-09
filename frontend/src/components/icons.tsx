@@ -135,11 +135,7 @@ export const ClockIcon = (p: P) => (
   </Svg>
 );
 
-export const BrowseIcon = (p: P) => (
-  <Svg {...p}>
-    <path d="M4 6h16M4 12h16M4 18h10" />
-  </Svg>
-);
+export const BrowseIcon = LogsIcon;
 
 export const CaretDownIcon = (p: P) => (
   <Svg {...p} strokeWidth={2}>
@@ -151,6 +147,18 @@ export const EyeIcon = (p: P) => (
   <Svg {...p} strokeWidth={1.8}>
     <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
     <circle cx="12" cy="12" r="3" />
+  </Svg>
+);
+
+export const ChevronLeftIcon = (p: P) => (
+  <Svg {...p} strokeWidth={2}>
+    <path d="m15 18-6-6 6-6" />
+  </Svg>
+);
+
+export const ChevronRightIcon = (p: P) => (
+  <Svg {...p} strokeWidth={2}>
+    <path d="m9 18 6-6-6-6" />
   </Svg>
 );
 
