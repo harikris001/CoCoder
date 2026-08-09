@@ -4,6 +4,7 @@ import { api, type Repo as ApiRepo, type RunSummary } from "../api/client";
 import { BoltIcon, ClockIcon, PlusIcon, RepoIcon, SyncIcon } from "../components/icons";
 import { SearchBox, TopbarShell } from "../components/Topbar";
 import { useToast } from "../components/Toast";
+import { formatRelative } from "../utils/format";
 
 type FilterKey = "all" | "running" | "queued" | "attention" | "off";
 type SortKey = "recent" | "name" | "lastRun";
@@ -59,21 +60,6 @@ function parseRepoInput(raw: string): { owner: string; name: string } | null {
   const parts = trimmed.split("/").filter(Boolean);
   if (parts.length === 2) return { owner: parts[0], name: parts[1] };
   return null;
-}
-
-function formatRelative(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "—";
-  const diff = Math.max(0, Date.now() - t);
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 48) return `${hr}h ago`;
-  const days = Math.floor(hr / 24);
-  return `${days}d ago`;
 }
 
 function indexLabel(status: string): string {
@@ -293,6 +279,7 @@ export function ReposPage() {
           <>
             <SearchBox placeholder="Search repositories…" value={query} onChange={setQuery} />
             <button
+              type="button"
               className="btn btn-ghost btn-sm"
               disabled={syncing || loading}
               onClick={() => void handleSync()}
@@ -300,7 +287,7 @@ export function ReposPage() {
               <SyncIcon size={16} />
               {syncing ? "Syncing…" : "Sync"}
             </button>
-            <button className="btn btn-primary" onClick={() => setOpen(true)}>
+            <button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>
               <PlusIcon size={16} />
               Connect repo
             </button>
@@ -416,7 +403,10 @@ export function ReposPage() {
                     visible.map((r) => (
                       <tr key={r.id} className="hover:bg-canvas [&:last-child_td]:border-b-0">
                         <td className="px-4 py-3">
-                          <span className="flex items-center gap-2.5">
+                          <Link
+                            to={`/repos/${r.id}`}
+                            className="flex items-center gap-2.5 hover:opacity-90"
+                          >
                             <span className="grid size-8 flex-none place-items-center rounded-lg border border-line bg-canvas text-muted">
                               <RepoIcon size={16} />
                             </span>
@@ -424,7 +414,7 @@ export function ReposPage() {
                               <b className="block font-semibold">{r.name}</b>
                               <span className="block truncate text-[12px] text-faint">{r.owner}</span>
                             </span>
-                          </span>
+                          </Link>
                         </td>
                         <td className="whitespace-nowrap px-4 py-3 font-mono">{r.branch}</td>
                         <td className="whitespace-nowrap px-4 py-3">
@@ -450,7 +440,7 @@ export function ReposPage() {
                         </td>
                         <td className="whitespace-nowrap px-4 py-3">
                           <Link
-                            to={r.latestRunId ? `/runs/${r.latestRunId}` : "/issue"}
+                            to={`/repos/${r.id}`}
                             className="font-semibold text-accent-ink hover:underline"
                           >
                             view →

@@ -17,10 +17,15 @@ import {
   RepoIcon,
 } from "../components/icons";
 import { SearchBox, TopbarShell } from "../components/Topbar";
-
-const LIVE = new Set(["queued", "running"]);
-const DONE = new Set(["completed", "done"]);
-const FAILED = new Set(["failed", "error", "needs_human"]);
+import {
+  LIVE,
+  DONE,
+  FAILED,
+  formatRelative,
+  formatClock,
+  formatDuration,
+  formatDurationShort,
+} from "../utils/format";
 
 const PIPELINE = [
   "queued",
@@ -54,50 +59,6 @@ type FeedItem = {
   href: string;
   meta: string;
 };
-
-function formatRelative(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "—";
-  const diff = Math.max(0, Date.now() - t);
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 48) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
-}
-
-function formatClock(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-function formatDuration(start: string | null | undefined, end?: string | null): string {
-  if (!start) return "—";
-  const a = new Date(start).getTime();
-  const b = end ? new Date(end).getTime() : Date.now();
-  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return "—";
-  const sec = Math.floor((b - a) / 1000);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  if (m >= 60) {
-    const h = Math.floor(m / 60);
-    return `${h}h ${m % 60}m`;
-  }
-  return `${m}m ${String(s).padStart(2, "0")}s`;
-}
-
-function formatDurationShort(ms: number): string {
-  const sec = Math.floor(ms / 1000);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  if (m >= 60) return `${Math.floor(m / 60)}h ${m % 60}m`;
-  return `${m}m ${String(s).padStart(2, "0")}s`;
-}
 
 function repoShort(full?: string | null): string {
   if (!full) return "repo";
@@ -230,7 +191,9 @@ export function DashboardPage() {
 
   useEffect(() => {
     if (!hasLive) return;
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    const id = window.setInterval(() => {
+      if (!document.hidden) setNow(Date.now());
+    }, 1000);
     return () => window.clearInterval(id);
   }, [hasLive]);
 
