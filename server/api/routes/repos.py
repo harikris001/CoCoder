@@ -241,6 +241,8 @@ async def _clone_and_index(repo_id: int) -> None:
                 job.message = "Index completed"
             await session.commit()
     except Exception as exc:
+        import logging
+        logging.getLogger("cocoder").exception("Background clone and index failed for repo %s", repo_id)
         async with async_session_factory() as session:
             repo = await session.get(Repo, repo_id)
             job = await session.get(IndexJob, job_id)

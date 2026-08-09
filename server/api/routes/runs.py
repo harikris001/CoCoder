@@ -117,6 +117,7 @@ async def retry_run(
     run.status = "queued"
     run.stage = "queued"
     run.error = None
+    run.retry_count = (run.retry_count or 0) + 1
     await append_run_event(db, run, stage="queued", message="Run re-queued")
     await db.commit()
 

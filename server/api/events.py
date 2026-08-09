@@ -28,7 +28,10 @@ class EventBus:
         async with self._lock:
             queues = list(self._subscribers.get(run_id, set()))
         for queue in queues:
-            await queue.put(event)
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # drop event rather than block
 
 
 event_bus = EventBus()
