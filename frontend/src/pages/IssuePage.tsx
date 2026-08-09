@@ -86,12 +86,8 @@ function formatClock(iso?: string | null): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
-function formatElapsed(start?: string | null, end?: string | null, now = Date.now()): string {
-  if (!start) return "0:00";
-  const a = new Date(start).getTime();
-  const b = end ? new Date(end).getTime() : now;
-  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return "0:00";
-  const sec = Math.floor((b - a) / 1000);
+function formatDuration(totalSeconds: number): string {
+  const sec = Math.max(0, Math.floor(totalSeconds));
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
 }
 
@@ -257,19 +253,25 @@ function IssueRunView({ runId }: { runId: number }) {
   const doneCount = steps.filter((s) => s.state === "done").length;
   const files = run?.files_touched?.length || diff?.files?.length || 0;
   const stats = countAdditions(diff?.diff || "");
-  const elapsed = formatElapsed(
-    run?.created_at,
-    isLive ? null : run?.finished_at || run?.updated_at,
-    now,
-  );
+  const elapsed = (() => {
+    const stored = run?.execution_seconds ?? 0;
+    if (!isLive || !run?.attempt_started_at) return formatDuration(stored);
+    const started = new Date(run.attempt_started_at).getTime();
+    if (Number.isNaN(started)) return formatDuration(stored);
+    return formatDuration(stored + Math.floor((now - started) / 1000));
+  })();
 
   async function retry() {
     if (!Number.isFinite(runId)) return;
     setBusy(true);
     setError(null);
     try {
-      await api.retryRun(runId);
-      toast(`Run #${runId} re-queued`);
+      const res = await api.retryRun(runId);
+      toast(
+        res.resume_stage
+          ? `Run #${runId} resuming from ${res.resume_stage}`
+          : `Run #${runId} queued`,
+      );
       await load();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -373,7 +375,7 @@ function IssueRunView({ runId }: { runId: number }) {
                 onClick={() => void retry()}
               >
                 <PlayIcon size={16} />
-                {busy ? "Queuing…" : isFailed ? "Retry run" : "Re-run agent"}
+                {busy ? "Queuing…" : isFailed ? "Resume run" : "Re-run agent"}
               </button>
             )}
             {isLive && (
@@ -778,6 +780,9 @@ function IssueRunView({ runId }: { runId: number }) {
                     </div>
                     <p className="mt-1.5 text-[13px] text-danger-ink/80">
                       {run.error || "The agent stopped before completing this issue."}
+                      {run.checkpoint_stage || run.pm_output
+                        ? " Saved progress will be reused — resume continues from the next incomplete stage."
+                        : ""}
                     </p>
                     <button
                       className="btn btn-primary mt-4"
@@ -785,7 +790,7 @@ function IssueRunView({ runId }: { runId: number }) {
                       onClick={() => void retry()}
                     >
                       <PlayIcon size={16} />
-                      {busy ? "Queuing…" : "Retry run"}
+                      {busy ? "Queuing…" : "Resume run"}
                     </button>
                   </div>
                 </div>

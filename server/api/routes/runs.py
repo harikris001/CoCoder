@@ -54,6 +54,10 @@ def _to_detail(run: Run) -> RunOut:
         planner_output=run.planner_output,
         review_output=run.review_output,
         files_touched=run.files_touched,
+        completed_task_ids=run.completed_task_ids,
+        checkpoint_stage=run.checkpoint_stage,
+        execution_seconds=run.execution_seconds or 0,
+        attempt_started_at=run.attempt_started_at,
         retry_count=run.retry_count,
         created_at=run.created_at,
         updated_at=run.updated_at,
@@ -105,6 +109,17 @@ async def get_run_diff(run_id: int, db: AsyncSession = Depends(get_db)) -> DiffO
     return DiffOut(run_id=run.id, branch_name=run.branch_name, diff=diff, files=files)
 
 
+def _next_resume_stage(run: Run) -> str:
+    """First incomplete stage for resume messaging."""
+    if not run.pm_output:
+        return "pm"
+    if not run.architecture_output:
+        return "architecture"
+    if not run.planner_output:
+        return "planner"
+    return "develop"
+
+
 @router.post("/{run_id}/retry")
 async def retry_run(
     run_id: int,
@@ -114,17 +129,32 @@ async def retry_run(
     run = await load_run(db, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
+
+    resume_stage = _next_resume_stage(run)
     run.status = "queued"
     run.stage = "queued"
     run.error = None
+    run.finished_at = None
+    run.attempt_started_at = None
     run.retry_count = (run.retry_count or 0) + 1
-    await append_run_event(db, run, stage="queued", message="Run re-queued")
+    # Preserve execution_seconds, pm/architecture/planner outputs, completed_task_ids, files_touched, branch
+    await append_run_event(
+        db,
+        run,
+        stage="queued",
+        message=f"Resuming from checkpoint (stage={resume_stage})",
+        payload={
+            "resume_stage": resume_stage,
+            "checkpoint_stage": run.checkpoint_stage,
+            "completed_task_ids": run.completed_task_ids or [],
+        },
+    )
     await db.commit()
 
     from orchestrator.runner import execute_run
 
     background_tasks.add_task(execute_run, run_id)
-    return {"status": "queued", "run_id": run_id}
+    return {"status": "queued", "run_id": run_id, "resume_stage": resume_stage}
 
 
 @router.websocket("/{run_id}/events")

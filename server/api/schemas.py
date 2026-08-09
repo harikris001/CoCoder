@@ -78,6 +78,10 @@ class RunOut(BaseModel):
     planner_output: Optional[dict[str, Any]] = None
     review_output: Optional[dict[str, Any]] = None
     files_touched: Optional[list[str]] = None
+    completed_task_ids: Optional[list[str]] = None
+    checkpoint_stage: Optional[str] = None
+    execution_seconds: int = 0
+    attempt_started_at: Optional[datetime] = None
     retry_count: int
     created_at: datetime
     updated_at: datetime

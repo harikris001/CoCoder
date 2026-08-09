@@ -4,6 +4,8 @@ from abc import ABC
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ToolErrorMiddleware
+from langchain.agents.middleware.types import ToolCallRequest
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -20,6 +22,36 @@ _STRUCTURED_OUTPUT_HINT = (
     "Do not end with empty content or plain prose only — the final step is always "
     "that structured JSON tool call."
 )
+
+_TOOL_ERROR_HINT = (
+    "\n\n## Tool errors\n\n"
+    "If a tool returns an error (for example FileNotFoundError or a bad path), "
+    "do not stop. Fix the arguments, search or list to find the correct path, "
+    "and retry. Only finish after the task is done or truly blocked."
+)
+
+_RECOVERABLE_TOOL_ERRORS = (
+    FileNotFoundError,
+    FileExistsError,
+    IsADirectoryError,
+    PermissionError,
+    OSError,
+    ValueError,
+)
+
+
+def _on_tool_error(exc: Exception, request: ToolCallRequest) -> str | None:
+    """Return a ToolMessage for recoverable FS/arg errors; propagate the rest."""
+    if not isinstance(exc, _RECOVERABLE_TOOL_ERRORS):
+        return None
+    tool_name = request.tool_call.get("name") or (
+        request.tool.name if request.tool else "tool"
+    )
+    return (
+        f"`{tool_name}` failed with {type(exc).__name__}: {exc}. "
+        "Fix the arguments or find the correct path (list_files / search_repository), "
+        "then retry. Do not stop."
+    )
 
 
 class BaseAgent(ABC):
@@ -44,11 +76,17 @@ class BaseAgent(ABC):
 
     def __init__(self) -> None:
         self._validate_class_attrs()
+        system_prompt = self.system_prompt.rstrip() + _STRUCTURED_OUTPUT_HINT
+        middleware = []
+        if self.tools:
+            system_prompt += _TOOL_ERROR_HINT
+            middleware.append(ToolErrorMiddleware(on_error=_on_tool_error))
         self.agent = create_agent(
             name=self.name,
             model=self.get_llm(),
-            system_prompt=self.system_prompt.rstrip() + _STRUCTURED_OUTPUT_HINT,
+            system_prompt=system_prompt,
             tools=self.tools,
+            middleware=middleware,
             response_format=ToolStrategy(
                 self.response_format,
                 handle_errors=True,

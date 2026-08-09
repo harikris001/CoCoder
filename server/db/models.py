@@ -70,6 +70,10 @@ class Run(Base):
     planner_output: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     review_output: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     files_touched: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
+    completed_task_ids: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
+    checkpoint_stage: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    execution_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    attempt_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

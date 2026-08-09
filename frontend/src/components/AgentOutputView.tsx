@@ -30,6 +30,7 @@ export const AGENT_META: Record<
     outputField: "review_output",
   },
   gitops: { key: "gitops", agent: "GitOps", title: "Open pull request" },
+  checkpoint: { key: "checkpoint", agent: "Orchestrator", title: "Checkpoint" },
   queued: { key: "queued", agent: "Orchestrator", title: "Queued" },
   done: { key: "done", agent: "Orchestrator", title: "Complete" },
   failed: { key: "failed", agent: "Orchestrator", title: "Failed" },

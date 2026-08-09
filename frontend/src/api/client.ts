@@ -67,6 +67,10 @@ export type RunDetail = RunSummary & {
   planner_output?: Record<string, unknown> | null;
   review_output?: Record<string, unknown> | null;
   files_touched?: string[] | null;
+  completed_task_ids?: string[] | null;
+  checkpoint_stage?: string | null;
+  execution_seconds?: number;
+  attempt_started_at?: string | null;
   retry_count: number;
   finished_at?: string | null;
   pull_request?: PullRequest | null;
@@ -168,7 +172,7 @@ export const api = {
   getRun: (id: number) => request<RunDetail>(`/runs/${id}`),
   getDiff: (id: number) => request<DiffOut>(`/runs/${id}/diff`),
   retryRun: (id: number) =>
-    request<{ status: string; run_id: number }>(`/runs/${id}/retry`, {
+    request<{ status: string; run_id: number; resume_stage?: string }>(`/runs/${id}/retry`, {
       method: "POST",
     }),
   getLlmSettings: () => request<LlmSettings>("/settings/llm"),

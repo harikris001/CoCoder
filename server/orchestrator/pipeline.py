@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, TypedDict
@@ -56,9 +57,13 @@ class PipelineState(TypedDict, total=False):
     planner: dict[str, Any]
     review: dict[str, Any]
     files_touched: list[str]
+    completed_task_ids: list[str]
+    checkpoint_stage: str
     branch_name: str
     status: str
     error: str
+    resume: bool
+    index_status: str
 
 
 def _structured(result: Any) -> dict[str, Any]:
@@ -177,14 +182,48 @@ async def _event(run_id: int, stage: str, message: str, payload: Optional[dict] 
         await session.commit()
 
 
+async def _begin_attempt(run_id: int) -> float:
+    """Mark attempt start for live UI and return monotonic clock for accumulation."""
+    started = time.monotonic()
+    await _update_run(
+        run_id,
+        status="running",
+        stage="clone",
+        attempt_started_at=datetime.now(timezone.utc),
+    )
+    return started
+
+
+async def _accumulate_execution(run_id: int, attempt_started: float, **fields: Any) -> int:
+    """Add this attempt's active seconds into execution_seconds and clear attempt_started_at."""
+    delta = max(0, int(time.monotonic() - attempt_started))
+    async with async_session_factory() as session:
+        result = await session.execute(select(Run).where(Run.id == run_id))
+        run = result.scalar_one()
+        total = int(run.execution_seconds or 0) + delta
+        run.execution_seconds = total
+        run.attempt_started_at = None
+        for key, value in fields.items():
+            setattr(run, key, value)
+        run.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        return total
+
+
 async def run_pipeline(state: PipelineState) -> PipelineState:
     settings = get_settings()
     run_id = state["run_id"]
     workspace = Path(state["workspace"])
     configure_tools(workspace, state["repo_db_id"])
+    resume = bool(state.get("resume"))
+    completed_task_ids: list[str] = list(state.get("completed_task_ids") or [])
+    files_touched: list[str] = list(state.get("files_touched") or [])
+    checkpoint_stage = state.get("checkpoint_stage")
+    repo = None
+    attempt_started = time.monotonic()
 
     try:
-        await _update_run(run_id, status="running", stage="clone")
+        attempt_started = await _begin_attempt(run_id)
         await _event(run_id, "clone", "Cloning / updating repository")
         repo = ensure_repo(state["clone_url"], workspace, settings.github_token)
 
@@ -195,71 +234,102 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
         await _event(run_id, "branch", f"Using branch {branch}")
 
         await _update_run(run_id, stage="index")
-        await _event(run_id, "index", "Building hybrid index (RAG + AST + dependency graph)")
         indexer = HybridIndexer(state["repo_db_id"], workspace)
-        stats = indexer.index(full=True)
-        query = f"{state['issue_title']}\n\n{state.get('issue_body') or ''}"
-        retrieved = indexer.retrieve(query)
-        context = format_context_pack(retrieved)
-        state["context"] = context
-        await _event(run_id, "index", "Index ready", payload=stats)
+        index_ready = (state.get("index_status") or "") == "ready"
+        if resume and index_ready:
+            await _event(run_id, "checkpoint", "Skipped full re-index (cached index ready)")
+            query = f"{state['issue_title']}\n\n{state.get('issue_body') or ''}"
+            retrieved = indexer.retrieve(query)
+            context = format_context_pack(retrieved)
+            state["context"] = context
+        else:
+            await _event(run_id, "index", "Building hybrid index (RAG + AST + dependency graph)")
+            stats = indexer.index(full=True)
+            query = f"{state['issue_title']}\n\n{state.get('issue_body') or ''}"
+            retrieved = indexer.retrieve(query)
+            context = format_context_pack(retrieved)
+            state["context"] = context
+            await _event(run_id, "index", "Index ready", payload=stats)
 
-        # Persist index stats on repo
-        async with async_session_factory() as session:
-            from db.models import Repo
+            # Persist index stats on repo
+            async with async_session_factory() as session:
+                from db.models import Repo
 
-            result = await session.execute(select(Repo).where(Repo.id == state["repo_db_id"]))
-            db_repo = result.scalar_one()
-            db_repo.index_status = "ready"
-            db_repo.index_stats = stats
-            db_repo.last_indexed_at = datetime.now(timezone.utc)
-            await session.commit()
+                result = await session.execute(select(Repo).where(Repo.id == state["repo_db_id"]))
+                db_repo = result.scalar_one()
+                db_repo.index_status = "ready"
+                db_repo.index_stats = stats
+                db_repo.last_indexed_at = datetime.now(timezone.utc)
+                await session.commit()
 
-        await _update_run(run_id, stage="pm")
-        await _event(run_id, "pm", "PM Agent analyzing issue")
-        pm_agent = PMAgent()
-        pm = await _invoke_agent(
-            pm_agent,
-            (
-                f"GitHub issue #{state['issue_number']}: {state['issue_title']}\n\n"
-                f"{state.get('issue_body') or ''}\n\n"
-                f"Repository summary:\n{context[:4000]}"
-            ),
-        )
-        state["pm"] = pm
-        await _update_run(run_id, pm_output=pm)
-        await _event(run_id, "pm", "PM output ready", payload=pm)
+        context = state["context"]
 
-        await _update_run(run_id, stage="architecture")
-        await _event(run_id, "architecture", "Architecture Agent mapping changes")
-        arch_agent = ArchitectureAgent()
-        architecture = await _invoke_agent(
-            arch_agent,
-            (
-                f"Requirements:\n{json.dumps(pm, indent=2)}\n\n"
-                f"Use search_repository if needed. Hybrid context:\n{context[:6000]}"
-            ),
-        )
-        state["architecture"] = architecture
-        await _update_run(run_id, architecture_output=architecture)
-        await _event(run_id, "architecture", "Architecture output ready", payload=architecture)
+        # --- PM ---
+        if state.get("pm"):
+            pm = state["pm"]
+            await _event(run_id, "checkpoint", "Skipped PM (cached output)")
+        else:
+            await _update_run(run_id, stage="pm")
+            await _event(run_id, "pm", "PM Agent analyzing issue")
+            pm_agent = PMAgent()
+            pm = await _invoke_agent(
+                pm_agent,
+                (
+                    f"GitHub issue #{state['issue_number']}: {state['issue_title']}\n\n"
+                    f"{state.get('issue_body') or ''}\n\n"
+                    f"Repository summary:\n{context[:4000]}"
+                ),
+            )
+            state["pm"] = pm
+            checkpoint_stage = "pm"
+            await _update_run(run_id, pm_output=pm, checkpoint_stage=checkpoint_stage)
+            await _event(run_id, "pm", "PM output ready", payload=pm)
 
-        await _update_run(run_id, stage="planner")
-        await _event(run_id, "planner", "Task Planner creating tasks")
-        planner_agent = TaskPlannerAgent()
-        planner = await _invoke_agent(
-            planner_agent,
-            (
-                f"PM:\n{json.dumps(pm, indent=2)}\n\n"
-                f"Architecture:\n{json.dumps(architecture, indent=2)}"
-            ),
-        )
-        state["planner"] = planner
-        await _update_run(run_id, planner_output=planner)
-        await _event(run_id, "planner", "Task plan ready", payload=planner)
+        # --- Architecture ---
+        if state.get("architecture"):
+            architecture = state["architecture"]
+            await _event(run_id, "checkpoint", "Skipped Architecture (cached output)")
+        else:
+            await _update_run(run_id, stage="architecture")
+            await _event(run_id, "architecture", "Architecture Agent mapping changes")
+            arch_agent = ArchitectureAgent()
+            architecture = await _invoke_agent(
+                arch_agent,
+                (
+                    f"Requirements:\n{json.dumps(pm, indent=2)}\n\n"
+                    f"Use search_repository if needed. Hybrid context:\n{context[:6000]}"
+                ),
+            )
+            state["architecture"] = architecture
+            checkpoint_stage = "architecture"
+            await _update_run(
+                run_id,
+                architecture_output=architecture,
+                checkpoint_stage=checkpoint_stage,
+            )
+            await _event(run_id, "architecture", "Architecture output ready", payload=architecture)
 
-        files_touched: list[str] = []
-        review: dict[str, Any] = {"approved": False}
+        # --- Planner ---
+        if state.get("planner"):
+            planner = state["planner"]
+            await _event(run_id, "checkpoint", "Skipped Planner (cached output)")
+        else:
+            await _update_run(run_id, stage="planner")
+            await _event(run_id, "planner", "Task Planner creating tasks")
+            planner_agent = TaskPlannerAgent()
+            planner = await _invoke_agent(
+                planner_agent,
+                (
+                    f"PM:\n{json.dumps(pm, indent=2)}\n\n"
+                    f"Architecture:\n{json.dumps(architecture, indent=2)}"
+                ),
+            )
+            state["planner"] = planner
+            checkpoint_stage = "planner"
+            await _update_run(run_id, planner_output=planner, checkpoint_stage=checkpoint_stage)
+            await _event(run_id, "planner", "Task plan ready", payload=planner)
+
+        review: dict[str, Any] = state.get("review") or {"approved": False}
         retries = 0
         max_retries = settings.max_review_retries
 
@@ -281,6 +351,11 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 ]
 
             for task in tasks:
+                task_id = str(task.get("id") or "")
+                if task_id and task_id in completed_task_ids:
+                    await _event(run_id, "develop", f"Skipping completed task {task_id}")
+                    continue
+
                 owner = (task.get("owner") or "backend").lower()
                 prompt = (
                     f"Task: {task.get('title')}\n{task.get('description')}\n\n"
@@ -297,10 +372,31 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 dev_out = await _invoke_agent(agent, prompt)
                 files_touched.extend(dev_out.get("files_modified") or [])
                 files_touched.extend(dev_out.get("files_created") or [])
+
+                title = (task.get("title") or task_id or "task").strip()
+                committed = commit_all(
+                    repo,
+                    f"cocoder: task {task_id or 'task'} — {title}",
+                )
+                if task_id:
+                    completed_task_ids.append(task_id)
+                files_touched = sorted(set(files_touched))
+                _, diff_files = get_diff(repo)
+                if diff_files:
+                    files_touched = sorted(set(files_touched) | set(diff_files))
+
+                checkpoint_stage = "develop"
+                await _update_run(
+                    run_id,
+                    files_touched=files_touched,
+                    completed_task_ids=completed_task_ids,
+                    checkpoint_stage=checkpoint_stage,
+                )
                 await _event(
                     run_id,
                     "develop",
-                    f"{owner} finished task {task.get('id')}",
+                    f"{owner} finished task {task_id}"
+                    + (" (committed)" if committed else " (no file changes)"),
                     payload=dev_out,
                 )
 
@@ -324,22 +420,31 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 ),
             )
             state["review"] = review
-            await _update_run(run_id, review_output=review)
+            checkpoint_stage = "review"
+            await _update_run(run_id, review_output=review, checkpoint_stage=checkpoint_stage)
             await _event(run_id, "review", "Review complete", payload=review)
 
             if review.get("approved"):
                 break
             retries += 1
+            # Clear completed tasks so develop can apply review feedback on next cycle
+            completed_task_ids = []
+            state["completed_task_ids"] = completed_task_ids
+            await _update_run(run_id, completed_task_ids=completed_task_ids)
             if retries > max_retries:
-                await _update_run(
+                await _accumulate_execution(
                     run_id,
+                    attempt_started,
                     status="needs_human",
                     stage="needs_human",
                     error="Review retries exhausted",
+                    checkpoint_stage=checkpoint_stage,
                     finished_at=datetime.now(timezone.utc),
                 )
                 await _event(run_id, "needs_human", "Needs human intervention after review failures")
                 state["status"] = "needs_human"
+                state["completed_task_ids"] = completed_task_ids
+                state["checkpoint_stage"] = checkpoint_stage or "review"
                 return state
 
         # GitOps
@@ -376,6 +481,9 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 select(Run).where(Run.id == run_id).options(selectinload(Run.pull_request))
             )
             run = result.scalar_one()
+            delta = max(0, int(time.monotonic() - attempt_started))
+            run.execution_seconds = int(run.execution_seconds or 0) + delta
+            run.attempt_started_at = None
             if pr.get("error"):
                 await append_run_event(
                     session,
@@ -386,6 +494,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 )
                 run.status = "failed"
                 run.error = str(pr.get("message"))
+                run.checkpoint_stage = checkpoint_stage
                 run.finished_at = datetime.now(timezone.utc)
             else:
                 await upsert_pull_request(
@@ -406,24 +515,42 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 )
                 run.status = "completed"
                 run.stage = "done"
+                run.checkpoint_stage = "done"
                 run.finished_at = datetime.now(timezone.utc)
                 run.files_touched = files
             await session.commit()
 
         state["status"] = "completed" if not pr.get("error") else "failed"
         state["files_touched"] = files
+        state["completed_task_ids"] = completed_task_ids
+        state["checkpoint_stage"] = "done" if not pr.get("error") else (checkpoint_stage or "gitops")
         return state
 
     except Exception as exc:
         logger.exception("Pipeline failed for run %s", run_id)
-        await _update_run(
+        # Persist any mid-task edits so resume keeps file work
+        if repo is not None:
+            try:
+                if commit_all(repo, "cocoder: wip checkpoint after failure"):
+                    await _event(run_id, "checkpoint", "WIP commit saved after failure")
+            except Exception:  # noqa: BLE001
+                logger.warning("WIP checkpoint commit failed for run %s", run_id, exc_info=True)
+
+        await _accumulate_execution(
             run_id,
+            attempt_started,
             status="failed",
             stage="failed",
             error=str(exc),
+            completed_task_ids=completed_task_ids,
+            files_touched=sorted(set(files_touched)) if files_touched else None,
+            checkpoint_stage=checkpoint_stage,
             finished_at=datetime.now(timezone.utc),
         )
         await _event(run_id, "failed", f"Pipeline error: {exc}")
         state["status"] = "failed"
         state["error"] = str(exc)
+        state["completed_task_ids"] = completed_task_ids
+        if checkpoint_stage:
+            state["checkpoint_stage"] = checkpoint_stage
         return state

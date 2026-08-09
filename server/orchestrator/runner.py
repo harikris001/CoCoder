@@ -24,6 +24,13 @@ async def execute_run(run_id: int) -> None:
             logger.error("Run %s not found", run_id)
             return
         repo = run.repo
+        resume = bool(
+            run.pm_output
+            or run.architecture_output
+            or run.planner_output
+            or run.completed_task_ids
+            or run.checkpoint_stage
+        )
         state: PipelineState = {
             "run_id": run.id,
             "issue_title": run.issue_title,
@@ -37,6 +44,20 @@ async def execute_run(run_id: int) -> None:
             "clone_url": repo.clone_url,
             "repo_db_id": repo.id,
             "branch_name": run.branch_name,
+            "resume": resume,
+            "index_status": repo.index_status or "",
+            "completed_task_ids": list(run.completed_task_ids or []),
+            "files_touched": list(run.files_touched or []),
         }
+        if run.pm_output:
+            state["pm"] = run.pm_output
+        if run.architecture_output:
+            state["architecture"] = run.architecture_output
+        if run.planner_output:
+            state["planner"] = run.planner_output
+        if run.review_output:
+            state["review"] = run.review_output
+        if run.checkpoint_stage:
+            state["checkpoint_stage"] = run.checkpoint_stage
 
     await run_pipeline(state)
