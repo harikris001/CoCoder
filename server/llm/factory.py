@@ -21,10 +21,14 @@ class ResolvedLlm:
     source: str = "byok"  # byok | env
 
 
-def resolve_llm_config(secrets: Optional[LlmSecrets] = None) -> ResolvedLlm:
+def resolve_llm_config(
+    secrets: Optional[LlmSecrets] = None,
+    *,
+    user_id: int | None = None,
+) -> ResolvedLlm:
     """Pick active provider credentials, falling back to OpenRouter from .env."""
     settings = get_settings()
-    data = secrets or get_llm_secrets()
+    data = secrets or get_llm_secrets(user_id)
     provider = data.active_provider
     creds = data.provider(provider)
 
@@ -65,8 +69,9 @@ def build_chat_model(
     *,
     temperature: float = 0.2,
     secrets: Optional[LlmSecrets] = None,
+    user_id: int | None = None,
 ) -> BaseChatModel:
-    resolved = resolve_llm_config(secrets)
+    resolved = resolve_llm_config(secrets, user_id=user_id)
     return _build(resolved, temperature=temperature)
 
 

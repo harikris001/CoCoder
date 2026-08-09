@@ -43,6 +43,7 @@ async def execute_run(run_id: int) -> None:
             "default_branch": repo.default_branch,
             "clone_url": repo.clone_url,
             "repo_db_id": repo.id,
+            "user_id": repo.user_id,
             "branch_name": run.branch_name,
             "resume": resume,
             "index_status": repo.index_status or "",

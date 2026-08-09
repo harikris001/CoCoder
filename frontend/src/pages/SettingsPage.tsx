@@ -8,42 +8,7 @@ import {
 import { TopbarShell } from "../components/Topbar";
 import { useToast } from "../components/Toast";
 import { CheckIcon, EyeIcon, EyeOffIcon } from "../components/icons";
-
-/** Profile + GitHub stay local mock for now (no backend). */
-const LS_MOCK = "cocoder.settings.mock.v1";
-
-type ProfileSettings = { name: string; email: string; username: string };
-type MockLocal = {
-  profile: ProfileSettings;
-  github: { token: string; connected: boolean };
-};
-
-const DEFAULT_MOCK: MockLocal = {
-  profile: { name: "Aisha Khan", email: "aisha@cocoder.dev", username: "aishakhan" },
-  github: { token: "", connected: false },
-};
-
-function loadMock(): MockLocal {
-  try {
-    const raw = localStorage.getItem(LS_MOCK);
-    if (!raw) return DEFAULT_MOCK;
-    const parsed = JSON.parse(raw) as Partial<MockLocal>;
-    return {
-      profile: { ...DEFAULT_MOCK.profile, ...parsed.profile },
-      github: { ...DEFAULT_MOCK.github, ...parsed.github },
-    };
-  } catch {
-    return DEFAULT_MOCK;
-  }
-}
-
-function persistMock(mock: MockLocal) {
-  try {
-    localStorage.setItem(LS_MOCK, JSON.stringify(mock));
-  } catch {
-    // ignore
-  }
-}
+import { useAuth } from "../auth/AuthProvider";
 
 const PROVIDERS: Array<{
   id: Exclude<LlmProviderId, "custom">;
@@ -185,7 +150,7 @@ function SavedPill({ mask }: { mask?: string | null }) {
 
 export function SettingsPage() {
   const toast = useToast();
-  const [mock, setMock] = useState<MockLocal>(DEFAULT_MOCK);
+  const { user } = useAuth();
   const [llm, setLlm] = useState<LlmSettings | null>(null);
   const [drafts, setDrafts] = useState<DraftKeys>(() => emptyDrafts(null));
   const [loading, setLoading] = useState(true);
@@ -203,7 +168,6 @@ export function SettingsPage() {
   }, [applyLlm]);
 
   useEffect(() => {
-    setMock(loadMock());
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -220,40 +184,6 @@ export function SettingsPage() {
       cancelled = true;
     };
   }, [loadLlm]);
-
-  const updateMock = (next: MockLocal) => {
-    setMock(next);
-    persistMock(next);
-  };
-
-  const setProfile = (patch: Partial<ProfileSettings>) =>
-    updateMock({ ...mock, profile: { ...mock.profile, ...patch } });
-
-  function handleTestGithub() {
-    const token = mock.github.token.trim();
-    if (!token) {
-      toast("Enter a GitHub token first");
-      return;
-    }
-    const looksValid =
-      /^ghp_/.test(token) || /^gho_/.test(token) || /^github_pat_/.test(token) || token.length >= 30;
-    updateMock({ ...mock, github: { ...mock.github, connected: looksValid } });
-    toast(looksValid ? "GitHub connected (local mock)" : "That token doesn't look valid");
-  }
-
-  function handleGithubSave() {
-    if (!mock.github.token.trim()) {
-      toast("Enter a GitHub token to save");
-      return;
-    }
-    updateMock({ ...mock, github: { ...mock.github, connected: true } });
-    toast("GitHub token saved locally (not wired to server yet)");
-  }
-
-  function handleDisconnect() {
-    updateMock({ ...mock, github: { token: "", connected: false } });
-    toast("GitHub disconnected");
-  }
 
   function patchDraft(id: LlmProviderId, patch: Partial<DraftKeys[LlmProviderId]>) {
     setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -360,8 +290,8 @@ export function SettingsPage() {
               <CheckIcon size={15} />
             </div>
             <p className="text-[12.5px] text-accent-ink">
-              Bring your own keys. Model API keys are stored encrypted on the CoCoder server and
-              never returned in full after save. Profile remains a local preview for now.
+               Bring your own keys. Model API keys are stored encrypted per account on the CoCoder
+               server and never returned in full after save.
             </p>
           </div>
 
@@ -371,112 +301,61 @@ export function SettingsPage() {
             </div>
           )}
 
-          {/* Profile — static / local mock */}
+          {/* Profile */}
           <SectionCard
             title="Profile"
-            description="Who CoCoder addresses commits and PRs from. (Preview only — not wired to the server yet.)"
-            aside={
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={() => {
-                  updateMock(mock);
-                  toast("Profile saved locally");
-                }}
-              >
-                Save profile
-              </button>
-            }
+            description="Your account identity. Profile editing will be added separately."
           >
             <div className="grid gap-4 sm:grid-cols-[96px_1fr]">
               <div className="flex flex-col items-center gap-2">
                 <div className="grid size-20 place-items-center rounded-full bg-ink text-[26px] font-bold text-surface">
-                  {mock.profile.name
+                  {user?.display_name
                     .split(" ")
                     .map((s) => s[0])
                     .join("")
                     .slice(0, 2)
                     .toUpperCase()}
                 </div>
-                <span className="text-[12px] text-faint">avatar</span>
+                <span className="text-[12px] text-faint">account</span>
               </div>
               <div className="space-y-4">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <label className="block">
+                  <div>
                     <span className="mb-1.5 block text-[12.5px] font-semibold">Display name</span>
-                    <input
-                      type="text"
-                      value={mock.profile.name}
-                      onChange={(e) => setProfile({ name: e.target.value })}
-                      className="min-h-[44px] w-full rounded-lg border border-line bg-surface px-3 text-[13px] text-ink outline-none focus:border-transparent focus:outline-2 focus:outline-accent"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1.5 block text-[12.5px] font-semibold">Email</span>
-                    <input
-                      type="email"
-                      value={mock.profile.email}
-                      onChange={(e) => setProfile({ email: e.target.value })}
-                      className="min-h-[44px] w-full rounded-lg border border-line bg-surface px-3 text-[13px] text-ink outline-none focus:border-transparent focus:outline-2 focus:outline-accent"
-                    />
-                  </label>
-                </div>
-                <label className="block max-w-[240px]">
-                  <span className="mb-1.5 block text-[12.5px] font-semibold">Username</span>
-                  <div className="flex min-h-[44px] items-center overflow-hidden rounded-lg border border-line bg-surface">
-                    <span className="pl-3 text-[13px] text-faint">@</span>
-                    <input
-                      type="text"
-                      value={mock.profile.username}
-                      onChange={(e) => setProfile({ username: e.target.value })}
-                      className="min-h-[44px] min-w-0 flex-1 bg-transparent px-1.5 text-[13px] text-ink outline-none"
-                    />
+                    <div className="flex min-h-[44px] items-center rounded-lg border border-line bg-canvas px-3 text-[13px] text-muted">
+                      {user?.display_name}
+                    </div>
                   </div>
-                </label>
+                  <div>
+                    <span className="mb-1.5 block text-[12.5px] font-semibold">Email</span>
+                    <div className="flex min-h-[44px] items-center rounded-lg border border-line bg-canvas px-3 text-[13px] text-muted">
+                      {user?.email}
+                    </div>
+                  </div>
+                </div>
+                <div className="block max-w-[240px]">
+                  <span className="mb-1.5 block text-[12.5px] font-semibold">Username</span>
+                  <div className="flex min-h-[44px] items-center overflow-hidden rounded-lg border border-line bg-canvas">
+                    <span className="pl-3 text-[13px] text-faint">@</span>
+                    <span className="px-1.5 text-[13px] text-muted">{user?.username}</span>
+                  </div>
+                </div>
               </div>
             </div>
           </SectionCard>
 
           <div className="h-4" />
 
-          {/* GitHub — still local mock */}
+          {/* GitHub */}
           <SectionCard
             title="GitHub"
-            description="CoCoder uses this token to open PRs from runs and read private repositories. (Local preview — server still uses GITHUB_TOKEN from .env.)"
-            aside={
-              mock.github.connected ? (
-                <span className="pill pill-ok">Connected</span>
-              ) : (
-                <span className="pill pill-queued">Not connected</span>
-              )
-            }
+            description="Connect GitHub to read private repositories and open pull requests."
+            aside={<span className="pill pill-queued">Coming soon</span>}
           >
-            <label className="mb-3.5 block">
-              <span className="mb-1.5 block text-[12.5px] font-semibold">Personal access token</span>
-              <KeyField
-                value={mock.github.token}
-                onChange={(v) =>
-                  updateMock({ ...mock, github: { ...mock.github, token: v, connected: false } })
-                }
-                placeholder="ghp_… or github_pat_…"
-                autoComplete="new-password"
-              />
-              <span className="mt-1.5 block font-mono text-[11.5px] text-faint">
-                scopes: repo, read:org · fine-grained tokens with Contents + Pull requests
-              </span>
-            </label>
-            <div className="flex flex-wrap gap-2.5">
-              <button type="button" className="btn btn-ghost btn-sm" onClick={handleTestGithub}>
-                Test connection
-              </button>
-              <button type="button" className="btn btn-primary btn-sm" onClick={handleGithubSave}>
-                Save token
-              </button>
-              {mock.github.connected && (
-                <button type="button" className="btn btn-ghost btn-sm text-danger-ink" onClick={handleDisconnect}>
-                  Disconnect
-                </button>
-              )}
-            </div>
+            <p className="text-[13px] leading-[1.6] text-muted">
+              GitHub OAuth will be added after email and password authentication is stable. The
+              current server token remains available for local development.
+            </p>
           </SectionCard>
 
           <div className="h-4" />

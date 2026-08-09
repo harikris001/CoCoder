@@ -87,7 +87,7 @@ export function LandingPage() {
             <Link to="/repos" className="text-[14px] text-muted transition-colors hover:text-ink">Repositories</Link>
             <Link to="/issue" className="text-[14px] text-muted transition-colors hover:text-ink">Issues</Link>
           </div>
-          <Link to="/dashboard" className="btn btn-ghost ml-auto">Sign in</Link>
+          <Link to="/signin" className="btn btn-ghost ml-auto">Sign in</Link>
         </div>
       </nav>
 

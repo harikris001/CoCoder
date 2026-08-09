@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     max_review_retries: int = 3
     embedding_model: str = "openai/text-embedding-3-small"
     llm_model: str = "deepseek/deepseek-v4-flash"
+    auth_session_days: int = 30
+    auth_cookie_name: str = "cocoder_session"
+    auth_cookie_secure: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:

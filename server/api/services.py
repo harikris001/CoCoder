@@ -25,11 +25,16 @@ async def get_or_create_repo(
     clone_url: str,
     default_branch: str,
     workspace_path: str,
+    user_id: int | None = None,
 ) -> Repo:
     full_name = f"{owner}/{name}"
     result = await session.execute(select(Repo).where(Repo.full_name == full_name))
     repo = result.scalar_one_or_none()
     if repo:
+        if repo.user_id is not None and user_id is not None and repo.user_id != user_id:
+            raise ValueError("Repository is already connected to another account")
+        if repo.user_id is None and user_id is not None:
+            repo.user_id = user_id
         repo.clone_url = clone_url
         repo.default_branch = default_branch
         repo.workspace_path = workspace_path
@@ -42,6 +47,7 @@ async def get_or_create_repo(
         clone_url=clone_url,
         default_branch=default_branch,
         workspace_path=workspace_path,
+        user_id=user_id,
     )
     session.add(repo)
     await session.flush()
@@ -106,10 +112,20 @@ async def append_run_event(
     return event
 
 
-async def load_run(session: AsyncSession, run_id: int) -> Optional[Run]:
+async def load_run(
+    session: AsyncSession,
+    run_id: int,
+    user_id: int | None = None,
+) -> Optional[Run]:
+    from sqlalchemy import and_
+
+    conditions = [Run.id == run_id]
+    if user_id is not None:
+        conditions.append(Repo.user_id == user_id)
     result = await session.execute(
         select(Run)
-        .where(Run.id == run_id)
+        .join(Repo, Repo.id == Run.repo_id)
+        .where(and_(*conditions))
         .options(
             selectinload(Run.events),
             selectinload(Run.pull_request),

@@ -12,10 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api.events import event_bus
+from api.auth import get_current_user, user_from_token
 from api.schemas import DiffOut, RunOut, RunSummaryOut
 from api.services import append_run_event, load_run
-from db.models import Run
-from db.session import get_db
+from config import get_settings
+from db.models import Repo, Run, User
+from db.session import async_session_factory, get_db
 from tools.github.git_ops import get_diff
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -73,10 +75,13 @@ async def list_runs(
     repo_id: int | None = None,
     status: str | None = None,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[RunSummaryOut]:
     stmt = (
         select(Run)
+        .join(Repo, Repo.id == Run.repo_id)
         .options(selectinload(Run.pull_request), selectinload(Run.repo))
+        .where(Repo.user_id == user.id)
         .order_by(Run.created_at.desc())
         .limit(100)
     )
@@ -89,16 +94,24 @@ async def list_runs(
 
 
 @router.get("/{run_id}", response_model=RunOut)
-async def get_run(run_id: int, db: AsyncSession = Depends(get_db)) -> RunOut:
-    run = await load_run(db, run_id)
+async def get_run(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> RunOut:
+    run = await load_run(db, run_id, user.id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return _to_detail(run)
 
 
 @router.get("/{run_id}/diff", response_model=DiffOut)
-async def get_run_diff(run_id: int, db: AsyncSession = Depends(get_db)) -> DiffOut:
-    run = await load_run(db, run_id)
+async def get_run_diff(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> DiffOut:
+    run = await load_run(db, run_id, user.id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     workspace = Path(run.repo.workspace_path)
@@ -125,8 +138,9 @@ async def retry_run(
     run_id: int,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict:
-    run = await load_run(db, run_id)
+    run = await load_run(db, run_id, user.id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -159,6 +173,12 @@ async def retry_run(
 
 @router.websocket("/{run_id}/events")
 async def run_events_ws(websocket: WebSocket, run_id: int) -> None:
+    async with async_session_factory() as db:
+        user = await user_from_token(db, websocket.cookies.get(get_settings().auth_cookie_name))
+        run = await load_run(db, run_id, user.id if user else None) if user else None
+    if not user or not run:
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     queue = await event_bus.subscribe(run_id)
     try:

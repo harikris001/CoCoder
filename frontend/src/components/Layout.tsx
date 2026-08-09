@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import type { ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/AuthProvider";
 import {
   BoltIcon,
   ChevronLeftIcon,
@@ -43,26 +44,19 @@ function useCollapsed() {
 
 export function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const { user, signOut } = useAuth();
   const [collapsed, toggle] = useCollapsed();
 
-  const mockProfile = (() => {
-    try {
-      const raw = localStorage.getItem("cocoder_settings_mock");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed?.profile?.name) return parsed.profile;
-      }
-    } catch {}
-    return { name: "Aisha Khan", email: "aisha@cocoder.dev" };
-  })();
+  const profileName = user?.display_name || user?.email || "CoCoder user";
+  const profileEmail = user?.email || "";
 
   const initials =
-    mockProfile.name
+    profileName
       .split(" ")
       .map((n: string) => n[0])
       .join("")
       .substring(0, 2)
-      .toUpperCase() || "AK";
+      .toUpperCase() || "CO";
 
   return (
     <div className="flex min-h-screen bg-canvas font-sans text-ink">
@@ -152,14 +146,16 @@ export function Layout({ children }: { children: ReactNode }) {
             {!collapsed && (
               <>
                 <div className="min-w-0">
-                  <div className="text-[13px] font-semibold">{mockProfile.name}</div>
-                  <div className="truncate text-xs text-muted">{mockProfile.email}</div>
+                  <div className="text-[13px] font-semibold">{profileName}</div>
+                  <div className="truncate text-xs text-muted">{profileEmail}</div>
                 </div>
                 <button
                   type="button"
                   aria-label="Sign out"
                   title="Sign out"
-                  onClick={() => navigate("/")}
+                  onClick={() => {
+                    void signOut().catch(() => undefined).finally(() => navigate("/"));
+                  }}
                   className="ml-auto grid size-8 place-items-center rounded-md text-faint transition-colors hover:bg-danger-soft hover:text-danger"
                 >
                   <LogoutIcon size={16} />

@@ -8,6 +8,27 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
+class UserOut(BaseModel):
+    id: int
+    email: str
+    display_name: str
+    username: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SignUpRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    display_name: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=72)
+
+
+class SignInRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=72)
+
+
 class RepoCreate(BaseModel):
     owner: str
     name: str
