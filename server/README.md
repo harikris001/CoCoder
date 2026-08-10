@@ -15,6 +15,8 @@ uv run python main.py  # http://localhost:8000
 
 - `POST /auth/signup`, `POST /auth/signin` — create an account or start a session
 - `GET /auth/me`, `POST /auth/signout` — inspect or end the current session
+- `GET /settings/github`, `POST /settings/github/test`, `PUT/DELETE /settings/github/pat` — manage GitHub PAT credentials
+- `GET /settings/github/oauth/start` and `/callback` — connect GitHub OAuth for the current user
 - `POST /webhooks/github` — signed issue webhook
 - `GET/POST /repos` — register & list repos
 - `POST /repos/{id}/issues/sync` — pull open GitHub issues and enqueue runs (local-dev friendly)

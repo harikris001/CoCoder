@@ -13,11 +13,12 @@ from sqlalchemy.orm import selectinload
 from api.schemas import IndexStatusOut, RepoCreate, RepoOut
 from api.auth import get_current_user
 from api.services import get_or_create_repo
-from config import WORKSPACE_ROOT, get_settings
+from config import WORKSPACE_ROOT
 from db.models import IndexJob, Repo, Run, User
 from db.session import async_session_factory, get_db
 from indexing.hybrid import HybridIndexer
 from tools.github.git_ops import ensure_repo
+from tools.github.credentials import resolve_github_token
 
 router = APIRouter(prefix="/repos", tags=["repos"])
 
@@ -142,7 +143,13 @@ async def sync_open_issues(
         raise HTTPException(status_code=404, detail="Repo not found")
 
     try:
-        issues = fetch_issues(repo.owner, repo.name, state="open", per_page=max(1, min(limit, 50)))
+        issues = fetch_issues(
+            repo.owner,
+            repo.name,
+            state="open",
+            per_page=max(1, min(limit, 50)),
+            token=resolve_github_token(user.id),
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to fetch issues: {exc}") from exc
 
@@ -198,7 +205,7 @@ async def run_specific_issue(
         raise HTTPException(status_code=404, detail="Repo not found")
 
     try:
-        issue = fetch_issue(repo.owner, repo.name, issue_number)
+        issue = fetch_issue(repo.owner, repo.name, issue_number, token=resolve_github_token(user.id))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to fetch issue: {exc}") from exc
     if not issue:
@@ -236,7 +243,6 @@ async def run_specific_issue(
 
 
 async def _clone_and_index(repo_id: int) -> None:
-    settings = get_settings()
     async with async_session_factory() as session:
         repo = await session.get(Repo, repo_id)
         if not repo:
@@ -247,7 +253,7 @@ async def _clone_and_index(repo_id: int) -> None:
         await session.commit()
         workspace = Path(repo.workspace_path)
         clone_url = repo.clone_url
-        default_token = settings.github_token
+        default_token = resolve_github_token(repo.user_id)
         job_id = job.id
 
     try:

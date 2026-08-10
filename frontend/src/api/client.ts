@@ -2,6 +2,7 @@ export const API_BASE =
   import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
 
 export const WS_BASE = API_BASE.replace(/^http/, "ws");
+export const githubOAuthStartUrl = () => `${API_BASE}/settings/github/oauth/start`;
 
 export type User = {
   id: number;
@@ -9,6 +10,17 @@ export type User = {
   display_name: string;
   username: string;
   created_at: string;
+};
+
+export type GitHubSettings = {
+  configured: boolean;
+  source?: "pat" | "oauth" | "env" | null;
+  login?: string | null;
+  mask?: string | null;
+  scopes: string[];
+  expires_at?: string | null;
+  pat_configured: boolean;
+  oauth_configured: boolean;
 };
 
 export class ApiError extends Error {
@@ -179,6 +191,21 @@ export const api = {
     request<{ status: string }>("/auth/signout", {
       method: "POST",
     }),
+  getGithubSettings: () => request<GitHubSettings>("/settings/github"),
+  testGithubToken: (token: string) =>
+    request<{ ok: boolean; message: string; login?: string | null; scopes: string[] }>(
+      "/settings/github/test",
+      { method: "POST", body: JSON.stringify({ token }) },
+    ),
+  saveGithubPat: (token: string) =>
+    request<GitHubSettings>("/settings/github/pat", {
+      method: "PUT",
+      body: JSON.stringify({ token }),
+    }),
+  clearGithubPat: () =>
+    request<GitHubSettings>("/settings/github/pat", { method: "DELETE" }),
+  clearGithubOAuth: () =>
+    request<GitHubSettings>("/settings/github/oauth", { method: "DELETE" }),
   health: () => request<{ status: string }>("/health"),
   listRepos: () => request<Repo[]>("/repos"),
   getRepo: (id: number) => request<Repo>(`/repos/${id}`),

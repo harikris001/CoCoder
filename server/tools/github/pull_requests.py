@@ -7,6 +7,7 @@ from typing import Any, Optional
 import httpx
 
 from config import get_settings
+from tools.github.client import GITHUB_API, github_headers
 
 
 def create_pull_request(
@@ -17,14 +18,11 @@ def create_pull_request(
     body: str,
     head: str,
     base: str,
+    token: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
-    headers = {
-        "Authorization": f"Bearer {settings.github_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+    headers = github_headers(token or settings.github_token)
+    url = f"{GITHUB_API}/repos/{owner}/{repo}/pulls"
     payload = {"title": title, "body": body, "head": head, "base": base}
 
     with httpx.Client(timeout=60.0, trust_env=False) as client:

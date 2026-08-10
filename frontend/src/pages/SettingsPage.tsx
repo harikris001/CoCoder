@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   api,
+  type GitHubSettings,
+  githubOAuthStartUrl,
   type LlmProviderId,
   type LlmSettings,
 } from "../api/client";
@@ -151,6 +153,9 @@ function SavedPill({ mask }: { mask?: string | null }) {
 export function SettingsPage() {
   const toast = useToast();
   const { user } = useAuth();
+  const [github, setGithub] = useState<GitHubSettings | null>(null);
+  const [githubToken, setGithubToken] = useState("");
+  const [githubBusy, setGithubBusy] = useState<string | null>(null);
   const [llm, setLlm] = useState<LlmSettings | null>(null);
   const [drafts, setDrafts] = useState<DraftKeys>(() => emptyDrafts(null));
   const [loading, setLoading] = useState(true);
@@ -173,7 +178,8 @@ export function SettingsPage() {
       setLoading(true);
       setError(null);
       try {
-        await loadLlm();
+        const [, githubSettings] = await Promise.all([loadLlm(), api.getGithubSettings()]);
+        if (!cancelled) setGithub(githubSettings);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -184,6 +190,55 @@ export function SettingsPage() {
       cancelled = true;
     };
   }, [loadLlm]);
+
+  async function testGithub() {
+    const token = githubToken.trim();
+    if (!token) {
+      toast("Enter a GitHub token first");
+      return;
+    }
+    setGithubBusy("test");
+    try {
+      const result = await api.testGithubToken(token);
+      toast(result.ok ? result.message : `Failed: ${result.message}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGithubBusy(null);
+    }
+  }
+
+  async function saveGithubPat() {
+    const token = githubToken.trim();
+    if (!token) {
+      toast("Enter a GitHub token first");
+      return;
+    }
+    setGithubBusy("save");
+    try {
+      const next = await api.saveGithubPat(token);
+      setGithub(next);
+      setGithubToken("");
+      toast(`GitHub connected as @${next.login || "user"}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGithubBusy(null);
+    }
+  }
+
+  async function clearGithubCredential() {
+    setGithubBusy("clear");
+    try {
+      const next = github?.source === "oauth" ? await api.clearGithubOAuth() : await api.clearGithubPat();
+      setGithub(next);
+      toast("GitHub credential disconnected");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGithubBusy(null);
+    }
+  }
 
   function patchDraft(id: LlmProviderId, patch: Partial<DraftKeys[LlmProviderId]>) {
     setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -349,13 +404,63 @@ export function SettingsPage() {
           {/* GitHub */}
           <SectionCard
             title="GitHub"
-            description="Connect GitHub to read private repositories and open pull requests."
-            aside={<span className="pill pill-queued">Coming soon</span>}
+            description="Bring a personal access token for private repositories, issue sync, and pull requests."
+            aside={
+              github?.configured ? (
+                <span className="pill pill-ok">{github.source === "env" ? "Server token" : "Connected"}</span>
+              ) : (
+                <span className="pill pill-queued">Not connected</span>
+              )
+            }
           >
-            <p className="text-[13px] leading-[1.6] text-muted">
-              GitHub OAuth will be added after email and password authentication is stable. The
-              current server token remains available for local development.
-            </p>
+            {github?.configured && (
+              <div className="mb-3.5 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-canvas px-3 py-2.5 text-[12.5px] text-muted">
+                <span>
+                  Connected as <b className="text-ink">@{github.login || "GitHub user"}</b>
+                </span>
+                {github.mask && <span className="font-mono text-faint">{github.mask}</span>}
+                {github.source !== "env" && (
+                  <button
+                    type="button"
+                    className="ml-auto text-[12.5px] font-semibold text-danger-ink hover:underline disabled:opacity-50"
+                    disabled={githubBusy === "clear"}
+                    onClick={() => void clearGithubCredential()}
+                  >
+                    Disconnect {github.source === "oauth" ? "OAuth" : "PAT"}
+                  </button>
+                )}
+              </div>
+            )}
+            <label className="mb-3.5 block">
+              <span className="mb-1.5 block text-[12.5px] font-semibold">Personal access token</span>
+              <KeyField
+                value={githubToken}
+                onChange={setGithubToken}
+                placeholder={github?.pat_configured ? `Leave blank to keep ${github.mask || "saved token"}` : "ghp_… or github_pat_…"}
+                autoComplete="new-password"
+              />
+              <span className="mt-1.5 block font-mono text-[11.5px] text-faint">
+                OAuth is recommended for new connections. PAT scopes should include repository access.
+              </span>
+            </label>
+            <div className="flex flex-wrap gap-2.5">
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => void testGithub()} disabled={githubBusy !== null}>
+                {githubBusy === "test" ? "Testing…" : "Test connection"}
+              </button>
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => void saveGithubPat()} disabled={githubBusy !== null}>
+                {githubBusy === "save" ? "Saving…" : "Save token"}
+              </button>
+              {github?.source !== "oauth" && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => window.location.assign(githubOAuthStartUrl())}
+                  disabled={githubBusy !== null}
+                >
+                  Connect with GitHub OAuth
+                </button>
+              )}
+            </div>
           </SectionCard>
 
           <div className="h-4" />

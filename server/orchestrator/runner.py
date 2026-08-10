@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from db.models import Run
 from db.session import async_session_factory
 from orchestrator.pipeline import PipelineState, run_pipeline
+from tools.github.credentials import resolve_github_token
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ async def execute_run(run_id: int) -> None:
             "clone_url": repo.clone_url,
             "repo_db_id": repo.id,
             "user_id": repo.user_id,
+            "github_token": resolve_github_token(repo.user_id),
             "branch_name": run.branch_name,
             "resume": resume,
             "index_status": repo.index_status or "",

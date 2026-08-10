@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import auth, repos, runs, settings
+from api.routes import auth, github, repos, runs, settings
 from api.webhooks import github as github_webhooks
 from config import get_settings
 from db.session import init_db
@@ -38,6 +38,7 @@ app.add_middleware(
 
 app.include_router(github_webhooks.router)
 app.include_router(auth.router)
+app.include_router(github.router)
 app.include_router(repos.router)
 app.include_router(runs.router)
 app.include_router(settings.router)

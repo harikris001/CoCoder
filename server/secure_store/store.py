@@ -14,6 +14,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from config import DATA_ROOT
 
 ProviderId = Literal["openai", "anthropic", "google", "openrouter", "custom"]
+GitHubCredentialSource = Literal["pat", "oauth"]
 PROVIDERS: tuple[ProviderId, ...] = ("openai", "anthropic", "google", "openrouter", "custom")
 
 SECRETS_PATH = DATA_ROOT / "secrets.enc"
@@ -75,6 +76,64 @@ class LlmSecrets:
             openrouter=_creds("openrouter", "deepseek/deepseek-v4-flash"),
             custom=_creds("custom"),
         )
+
+
+@dataclass
+class GitHubCredential:
+    token: str = ""
+    login: str = ""
+    scopes: list[str] = field(default_factory=list)
+    expires_at: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> GitHubCredential:
+        if not data:
+            return cls()
+        scopes = data.get("scopes") or []
+        return cls(
+            token=str(data.get("token") or ""),
+            login=str(data.get("login") or ""),
+            scopes=[str(scope) for scope in scopes] if isinstance(scopes, list) else [],
+            expires_at=str(data["expires_at"]) if data.get("expires_at") else None,
+        )
+
+
+@dataclass
+class GitHubSecrets:
+    active_source: GitHubCredentialSource = "pat"
+    pat: GitHubCredential = field(default_factory=GitHubCredential)
+    oauth: GitHubCredential = field(default_factory=GitHubCredential)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "active_source": self.active_source,
+            "pat": self.pat.to_dict(),
+            "oauth": self.oauth.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> GitHubSecrets:
+        if not data:
+            return cls()
+        source = data.get("active_source")
+        if source not in {"pat", "oauth"}:
+            source = "pat"
+        return cls(
+            active_source=source,
+            pat=GitHubCredential.from_dict(data.get("pat")),
+            oauth=GitHubCredential.from_dict(data.get("oauth")),
+        )
+
+    def active(self) -> tuple[GitHubCredentialSource, GitHubCredential] | None:
+        preferred = self.oauth if self.active_source == "oauth" else self.pat
+        if preferred.token:
+            return self.active_source, preferred
+        fallback_source: GitHubCredentialSource = "pat" if self.active_source == "oauth" else "oauth"
+        fallback = self.pat if fallback_source == "pat" else self.oauth
+        return (fallback_source, fallback) if fallback.token else None
 
 
 def mask_key(key: str) -> Optional[str]:
@@ -150,6 +209,42 @@ def get_llm_secrets(user_id: int | None = None) -> LlmSecrets:
             return LlmSecrets.from_dict(users.get(str(user_id)))
         return LlmSecrets()
     return LlmSecrets.from_dict(blob.get("llm"))
+
+
+def get_github_secrets(user_id: int) -> GitHubSecrets:
+    blob = _read_blob()
+    if not isinstance(blob, dict):
+        return GitHubSecrets()
+    users = blob.get("github_by_user")
+    if not isinstance(users, dict):
+        return GitHubSecrets()
+    return GitHubSecrets.from_dict(users.get(str(user_id)))
+
+
+def save_github_secrets(user_id: int, secrets: GitHubSecrets) -> GitHubSecrets:
+    blob = _read_blob()
+    users = blob.setdefault("github_by_user", {})
+    if not isinstance(users, dict):
+        users = {}
+        blob["github_by_user"] = users
+    users[str(user_id)] = secrets.to_dict()
+    _write_blob(blob)
+    return secrets
+
+
+def clear_github_credential(user_id: int, source: GitHubCredentialSource) -> None:
+    secrets = get_github_secrets(user_id)
+    setattr(secrets, source, GitHubCredential())
+    if secrets.active_source == source:
+        fallback_source: GitHubCredentialSource = "pat" if source == "oauth" else "oauth"
+        fallback = getattr(secrets, fallback_source)
+        if fallback.token:
+            secrets.active_source = fallback_source
+    save_github_secrets(user_id, secrets)
+
+
+def get_active_github_credential(user_id: int) -> tuple[GitHubCredentialSource, GitHubCredential] | None:
+    return get_github_secrets(user_id).active()
 
 
 def save_llm_secrets(secrets: LlmSecrets, user_id: int | None = None) -> LlmSecrets:
