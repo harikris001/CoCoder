@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from api.auth import get_current_user
 from db.models import User
-from llm.factory import probe_provider, resolve_llm_config
+from llm.factory import ProviderModelsError, list_provider_models, probe_provider, resolve_llm_config
 from secure_store import (
     GitHubCredential,
     PROVIDERS,
@@ -67,6 +67,22 @@ class LlmTestRequest(BaseModel):
 class LlmTestOut(BaseModel):
     ok: bool
     message: str
+
+
+class LlmModelOut(BaseModel):
+    id: str
+    name: str = ""
+
+
+class LlmModelsRequest(BaseModel):
+    provider: ProviderId
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+class LlmModelsOut(BaseModel):
+    provider: ProviderId
+    models: list[LlmModelOut] = Field(default_factory=list)
 
 
 class GitHubStatusOut(BaseModel):
@@ -184,6 +200,39 @@ async def test_llm_settings(
         base_url=base_url,
     )
     return LlmTestOut(ok=ok, message=message)
+
+
+@router.post("/llm/models", response_model=LlmModelsOut)
+async def post_llm_models(
+    body: LlmModelsRequest,
+    user: User = Depends(get_current_user),
+) -> LlmModelsOut:
+    provider = body.provider
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=400, detail="Invalid provider")
+
+    secrets = get_llm_secrets(user.id)
+    creds = secrets.provider(provider)
+    key = (body.api_key or "").strip() or creds.api_key
+    url = (body.base_url or "").strip() or creds.base_url
+
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail="No API key to list models (enter one or save first)",
+        )
+    if provider == "custom" and not url:
+        raise HTTPException(status_code=400, detail="Base URL is required for custom provider")
+
+    try:
+        models = await list_provider_models(provider, api_key=key, base_url=url)
+    except ProviderModelsError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    return LlmModelsOut(
+        provider=provider,
+        models=[LlmModelOut(id=m.id, name=m.name) for m in models],
+    )
 
 
 @router.get("/github", response_model=GitHubStatusOut)
