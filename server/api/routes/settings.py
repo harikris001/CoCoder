@@ -4,11 +4,26 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from api.auth import get_current_user
+from db.models import User
 from llm.factory import probe_provider, resolve_llm_config
-from secure_store import PROVIDERS, ProviderId, clear_llm_secrets, get_llm_secrets, mask_key, update_llm_secrets
+from secure_store import (
+    GitHubCredential,
+    PROVIDERS,
+    ProviderId,
+    clear_github_credential,
+    clear_llm_secrets,
+    get_github_secrets,
+    get_llm_secrets,
+    mask_key,
+    save_github_secrets,
+    update_llm_secrets,
+)
+from tools.github.client import validate_github_token
+from tools.github.credentials import github_status
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -54,8 +69,30 @@ class LlmTestOut(BaseModel):
     message: str
 
 
-def _status_map(secrets=None) -> dict[str, ProviderStatus]:
-    data = secrets or get_llm_secrets()
+class GitHubStatusOut(BaseModel):
+    configured: bool
+    source: str | None = None
+    login: str | None = None
+    mask: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    expires_at: str | None = None
+    pat_configured: bool = False
+    oauth_configured: bool = False
+
+
+class GitHubPatUpdate(BaseModel):
+    token: str
+
+
+class GitHubTestOut(BaseModel):
+    ok: bool
+    message: str
+    login: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+
+
+def _status_map(secrets) -> dict[str, ProviderStatus]:
+    data = secrets
     out: dict[str, ProviderStatus] = {}
     for name in PROVIDERS:
         creds = data.provider(name)
@@ -69,10 +106,10 @@ def _status_map(secrets=None) -> dict[str, ProviderStatus]:
     return out
 
 
-def _to_out() -> LlmSettingsOut:
-    secrets = get_llm_secrets()
+def _to_out(user_id: int) -> LlmSettingsOut:
+    secrets = get_llm_secrets(user_id)
     try:
-        resolved = resolve_llm_config(secrets)
+        resolved = resolve_llm_config(secrets, user_id=user_id)
         source: Literal["byok", "env"] = "byok" if resolved.source == "byok" else "env"
         resolved_model = resolved.model
         active = resolved.provider
@@ -91,12 +128,15 @@ def _to_out() -> LlmSettingsOut:
 
 
 @router.get("/llm", response_model=LlmSettingsOut)
-async def get_llm_settings() -> LlmSettingsOut:
-    return _to_out()
+async def get_llm_settings(user: User = Depends(get_current_user)) -> LlmSettingsOut:
+    return _to_out(user.id)
 
 
 @router.put("/llm", response_model=LlmSettingsOut)
-async def put_llm_settings(body: LlmSettingsUpdate) -> LlmSettingsOut:
+async def put_llm_settings(
+    body: LlmSettingsUpdate,
+    user: User = Depends(get_current_user),
+) -> LlmSettingsOut:
     def _patch(p: Optional[ProviderUpdate]) -> Optional[dict[str, Any]]:
         if p is None:
             return None
@@ -106,6 +146,7 @@ async def put_llm_settings(body: LlmSettingsUpdate) -> LlmSettingsOut:
         raise HTTPException(status_code=400, detail="Invalid active_provider")
 
     update_llm_secrets(
+        user_id=user.id,
         active_provider=body.active_provider,
         openai=_patch(body.openai),
         anthropic=_patch(body.anthropic),
@@ -113,18 +154,21 @@ async def put_llm_settings(body: LlmSettingsUpdate) -> LlmSettingsOut:
         openrouter=_patch(body.openrouter),
         custom=_patch(body.custom),
     )
-    return _to_out()
+    return _to_out(user.id)
 
 
 @router.delete("/llm", response_model=LlmSettingsOut)
-async def delete_llm_settings() -> LlmSettingsOut:
-    clear_llm_secrets()
-    return _to_out()
+async def delete_llm_settings(user: User = Depends(get_current_user)) -> LlmSettingsOut:
+    clear_llm_secrets(user.id)
+    return _to_out(user.id)
 
 
 @router.post("/llm/test", response_model=LlmTestOut)
-async def test_llm_settings(body: LlmTestRequest) -> LlmTestOut:
-    secrets = get_llm_secrets()
+async def test_llm_settings(
+    body: LlmTestRequest,
+    user: User = Depends(get_current_user),
+) -> LlmTestOut:
+    secrets = get_llm_secrets(user.id)
     creds = secrets.provider(body.provider)
     api_key = (body.api_key or "").strip() or creds.api_key
     model = (body.model or "").strip() or creds.model
@@ -140,3 +184,59 @@ async def test_llm_settings(body: LlmTestRequest) -> LlmTestOut:
         base_url=base_url,
     )
     return LlmTestOut(ok=ok, message=message)
+
+
+@router.get("/github", response_model=GitHubStatusOut)
+async def get_github_settings(user: User = Depends(get_current_user)) -> GitHubStatusOut:
+    return GitHubStatusOut(**github_status(user.id))
+
+
+@router.post("/github/test", response_model=GitHubTestOut)
+async def test_github_token(
+    body: GitHubPatUpdate,
+    user: User = Depends(get_current_user),
+) -> GitHubTestOut:
+    del user
+    try:
+        identity = await validate_github_token(body.token)
+    except ValueError as exc:
+        return GitHubTestOut(ok=False, message=str(exc))
+    return GitHubTestOut(
+        ok=True,
+        message=f"Connected as @{identity['login']}",
+        login=str(identity["login"]),
+        scopes=list(identity.get("scopes") or []),
+    )
+
+
+@router.put("/github/pat", response_model=GitHubStatusOut)
+async def save_github_pat(
+    body: GitHubPatUpdate,
+    user: User = Depends(get_current_user),
+) -> GitHubStatusOut:
+    try:
+        identity = await validate_github_token(body.token)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    secrets = get_github_secrets(user.id)
+    secrets.pat = GitHubCredential(
+        token=body.token.strip(),
+        login=str(identity["login"]),
+        scopes=list(identity.get("scopes") or []),
+    )
+    secrets.active_source = "pat"
+    save_github_secrets(user.id, secrets)
+    return GitHubStatusOut(**github_status(user.id))
+
+
+@router.delete("/github/pat", response_model=GitHubStatusOut)
+async def delete_github_pat(user: User = Depends(get_current_user)) -> GitHubStatusOut:
+    clear_github_credential(user.id, "pat")
+    return GitHubStatusOut(**github_status(user.id))
+
+
+@router.delete("/github/oauth", response_model=GitHubStatusOut)
+async def delete_github_oauth(user: User = Depends(get_current_user)) -> GitHubStatusOut:
+    clear_github_credential(user.id, "oauth")
+    return GitHubStatusOut(**github_status(user.id))

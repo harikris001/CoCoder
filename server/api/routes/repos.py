@@ -11,19 +11,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api.schemas import IndexStatusOut, RepoCreate, RepoOut
+from api.auth import get_current_user
 from api.services import get_or_create_repo
-from config import WORKSPACE_ROOT, get_settings
-from db.models import IndexJob, Repo, Run
+from config import WORKSPACE_ROOT
+from db.models import IndexJob, Repo, Run, User
 from db.session import async_session_factory, get_db
 from indexing.hybrid import HybridIndexer
 from tools.github.git_ops import ensure_repo
+from tools.github.credentials import resolve_github_token
 
 router = APIRouter(prefix="/repos", tags=["repos"])
 
 
 @router.get("", response_model=list[RepoOut])
-async def list_repos(db: AsyncSession = Depends(get_db)) -> list[Repo]:
-    result = await db.execute(select(Repo).order_by(Repo.created_at.desc()))
+async def list_repos(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[Repo]:
+    result = await db.execute(
+        select(Repo).where(Repo.user_id == user.id).order_by(Repo.created_at.desc())
+    )
     return list(result.scalars().all())
 
 
@@ -32,17 +39,22 @@ async def register_repo(
     body: RepoCreate,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> Repo:
     clone_url = body.clone_url or f"https://github.com/{body.owner}/{body.name}.git"
     workspace = str(WORKSPACE_ROOT / f"{body.owner}__{body.name}")
-    repo = await get_or_create_repo(
-        db,
-        owner=body.owner,
-        name=body.name,
-        clone_url=clone_url,
-        default_branch=body.default_branch,
-        workspace_path=workspace,
-    )
+    try:
+        repo = await get_or_create_repo(
+            db,
+            owner=body.owner,
+            name=body.name,
+            clone_url=clone_url,
+            default_branch=body.default_branch,
+            workspace_path=workspace,
+            user_id=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await db.commit()
     await db.refresh(repo)
     background_tasks.add_task(_clone_and_index, repo.id)
@@ -50,16 +62,26 @@ async def register_repo(
 
 
 @router.get("/{repo_id}", response_model=RepoOut)
-async def get_repo(repo_id: int, db: AsyncSession = Depends(get_db)) -> Repo:
-    repo = await db.get(Repo, repo_id)
+async def get_repo(
+    repo_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Repo:
+    result = await db.execute(select(Repo).where(Repo.id == repo_id, Repo.user_id == user.id))
+    repo = result.scalar_one_or_none()
     if not repo:
         raise HTTPException(status_code=404, detail="Repo not found")
     return repo
 
 
 @router.get("/{repo_id}/index/status", response_model=IndexStatusOut)
-async def index_status(repo_id: int, db: AsyncSession = Depends(get_db)) -> IndexStatusOut:
-    repo = await db.get(Repo, repo_id)
+async def index_status(
+    repo_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> IndexStatusOut:
+    result = await db.execute(select(Repo).where(Repo.id == repo_id, Repo.user_id == user.id))
+    repo = result.scalar_one_or_none()
     if not repo:
         raise HTTPException(status_code=404, detail="Repo not found")
     result = await db.execute(
@@ -89,8 +111,10 @@ async def reindex_repo(
     repo_id: int,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict:
-    repo = await db.get(Repo, repo_id)
+    result = await db.execute(select(Repo).where(Repo.id == repo_id, Repo.user_id == user.id))
+    repo = result.scalar_one_or_none()
     if not repo:
         raise HTTPException(status_code=404, detail="Repo not found")
     background_tasks.add_task(_clone_and_index, repo.id)
@@ -103,6 +127,7 @@ async def sync_open_issues(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     limit: int = 10,
+    user: User = Depends(get_current_user),
 ) -> dict:
     """Pull open GitHub issues and enqueue runs for ones not already tracked.
 
@@ -112,12 +137,19 @@ async def sync_open_issues(
     from orchestrator.runner import execute_run
     from tools.github.github_issues import fetch_issues
 
-    repo = await db.get(Repo, repo_id)
+    result = await db.execute(select(Repo).where(Repo.id == repo_id, Repo.user_id == user.id))
+    repo = result.scalar_one_or_none()
     if not repo:
         raise HTTPException(status_code=404, detail="Repo not found")
 
     try:
-        issues = fetch_issues(repo.owner, repo.name, state="open", per_page=max(1, min(limit, 50)))
+        issues = fetch_issues(
+            repo.owner,
+            repo.name,
+            state="open",
+            per_page=max(1, min(limit, 50)),
+            token=resolve_github_token(user.id),
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to fetch issues: {exc}") from exc
 
@@ -160,18 +192,20 @@ async def run_specific_issue(
     issue_number: int,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict:
     """Fetch one GitHub issue and enqueue (or re-use) a CoCoder run."""
     from api.services import create_run
     from orchestrator.runner import execute_run
     from tools.github.github_issues import fetch_issue
 
-    repo = await db.get(Repo, repo_id)
+    result = await db.execute(select(Repo).where(Repo.id == repo_id, Repo.user_id == user.id))
+    repo = result.scalar_one_or_none()
     if not repo:
         raise HTTPException(status_code=404, detail="Repo not found")
 
     try:
-        issue = fetch_issue(repo.owner, repo.name, issue_number)
+        issue = fetch_issue(repo.owner, repo.name, issue_number, token=resolve_github_token(user.id))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to fetch issue: {exc}") from exc
     if not issue:
@@ -209,7 +243,6 @@ async def run_specific_issue(
 
 
 async def _clone_and_index(repo_id: int) -> None:
-    settings = get_settings()
     async with async_session_factory() as session:
         repo = await session.get(Repo, repo_id)
         if not repo:
@@ -220,7 +253,7 @@ async def _clone_and_index(repo_id: int) -> None:
         await session.commit()
         workspace = Path(repo.workspace_path)
         clone_url = repo.clone_url
-        default_token = settings.github_token
+        default_token = resolve_github_token(repo.user_id)
         job_id = job.id
 
     try:

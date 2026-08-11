@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     max_review_retries: int = 3
     embedding_model: str = "openai/text-embedding-3-small"
     llm_model: str = "deepseek/deepseek-v4-flash"
+    auth_session_days: int = 30
+    auth_cookie_name: str = "cocoder_session"
+    auth_cookie_secure: bool = False
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+    github_oauth_redirect_uri: str = "http://localhost:8000/settings/github/oauth/callback"
+    frontend_url: str = "http://localhost:5173"
+    github_oauth_scopes: str = "read:user user:email repo"
 
     @property
     def cors_origin_list(self) -> list[str]:

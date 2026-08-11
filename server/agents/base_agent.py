@@ -74,7 +74,8 @@ class BaseAgent(ABC):
     # virtual property (children CAN override)
     tools: list[BaseTool] = []
 
-    def __init__(self) -> None:
+    def __init__(self, user_id: int | None = None) -> None:
+        self.user_id = user_id
         self._validate_class_attrs()
         system_prompt = self.system_prompt.rstrip() + _STRUCTURED_OUTPUT_HINT
         middleware = []
@@ -100,7 +101,7 @@ class BaseAgent(ABC):
         Defaults to the active BYOK provider (Settings), falling back to
         OpenRouter via ``OPENROUTER_API_KEY`` / ``LLM_MODEL`` in .env.
         """
-        return build_chat_model(temperature=0.2)
+        return build_chat_model(temperature=0.2, user_id=self.user_id)
 
     # delegate methods to the underlying agent graph
     def invoke(self, *args: Any, **kwargs: Any) -> Any:

@@ -2,6 +2,36 @@ export const API_BASE =
   import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
 
 export const WS_BASE = API_BASE.replace(/^http/, "ws");
+export const githubOAuthStartUrl = () => `${API_BASE}/settings/github/oauth/start`;
+
+export type User = {
+  id: number;
+  email: string;
+  display_name: string;
+  username: string;
+  created_at: string;
+};
+
+export type GitHubSettings = {
+  configured: boolean;
+  source?: "pat" | "oauth" | "env" | null;
+  login?: string | null;
+  mask?: string | null;
+  scopes: string[];
+  expires_at?: string | null;
+  pat_configured: boolean;
+  oauth_configured: boolean;
+};
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
 
 export type Repo = {
   id: number;
@@ -121,18 +151,61 @@ export type LlmSettingsUpdate = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const { headers, ...rest } = init || {};
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    ...init,
+    ...rest,
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    let message = text || res.statusText;
+    try {
+      const parsed = JSON.parse(text) as { detail?: string | Array<{ msg?: string }> };
+      if (typeof parsed.detail === "string") message = parsed.detail;
+      else if (Array.isArray(parsed.detail)) {
+        message = parsed.detail.map((item) => item.msg || "Invalid value").join("; ");
+      }
+    } catch {
+      // Keep the plain response when it is not JSON.
+    }
+    throw new ApiError(message, res.status);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
 export const api = {
+  getCurrentUser: () => request<User>("/auth/me"),
+  signUp: (body: { email: string; display_name: string; password: string }) =>
+    request<User>("/auth/signup", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  signIn: (body: { email: string; password: string }) =>
+    request<User>("/auth/signin", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  signOut: () =>
+    request<{ status: string }>("/auth/signout", {
+      method: "POST",
+    }),
+  getGithubSettings: () => request<GitHubSettings>("/settings/github"),
+  testGithubToken: (token: string) =>
+    request<{ ok: boolean; message: string; login?: string | null; scopes: string[] }>(
+      "/settings/github/test",
+      { method: "POST", body: JSON.stringify({ token }) },
+    ),
+  saveGithubPat: (token: string) =>
+    request<GitHubSettings>("/settings/github/pat", {
+      method: "PUT",
+      body: JSON.stringify({ token }),
+    }),
+  clearGithubPat: () =>
+    request<GitHubSettings>("/settings/github/pat", { method: "DELETE" }),
+  clearGithubOAuth: () =>
+    request<GitHubSettings>("/settings/github/oauth", { method: "DELETE" }),
   health: () => request<{ status: string }>("/health"),
   listRepos: () => request<Repo[]>("/repos"),
   getRepo: (id: number) => request<Repo>(`/repos/${id}`),

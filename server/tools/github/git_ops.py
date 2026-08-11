@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from git import GitCommandError, InvalidGitRepositoryError, Repo
 
@@ -19,15 +20,18 @@ def workspace_for(owner: str, name: str, root: Path) -> Path:
 
 def ensure_repo(clone_url: str, workspace: Path, token: Optional[str] = None) -> Repo:
     workspace.parent.mkdir(parents=True, exist_ok=True)
-    auth_url = _authenticated_url(clone_url, token or get_settings().github_token)
+    clean_url = _clean_url(clone_url)
+    auth_url = _authenticated_url(clean_url, token or get_settings().github_token)
 
     if workspace.exists() and (workspace / ".git").exists():
         repo = Repo(str(workspace))
         try:
             repo.remotes.origin.set_url(auth_url)
             repo.remotes.origin.fetch()
-        except GitCommandError as exc:
-            logger.warning("Fetch failed: %s", exc)
+        except GitCommandError:
+            logger.warning("GitHub repository fetch failed")
+        finally:
+            repo.remotes.origin.set_url(clean_url)
         return repo
 
     if workspace.exists():
@@ -36,24 +40,56 @@ def ensure_repo(clone_url: str, workspace: Path, token: Optional[str] = None) ->
             raise RuntimeError(f"Workspace exists but is not a git repo: {workspace}")
         workspace.rmdir()
 
-    return Repo.clone_from(auth_url, str(workspace))
+    try:
+        repo = Repo.clone_from(auth_url, str(workspace))
+    except GitCommandError as exc:
+        raise RuntimeError(_redact_git_error(str(exc), token or get_settings().github_token)) from None
+    repo.remotes.origin.set_url(clean_url)
+    return repo
 
 
 def _authenticated_url(clone_url: str, token: str) -> str:
     if not token:
         return clone_url
     if clone_url.startswith("https://"):
-        return clone_url.replace("https://", f"https://x-access-token:{token}@", 1)
+        return clone_url.replace("https://", f"https://x-access-token:{quote(token, safe='')}@", 1)
     return clone_url
 
 
-def ensure_bugfix_branch(repo: Repo, issue_number: int, default_branch: str = "main") -> str:
+def _redact_git_error(error: str, token: Optional[str]) -> str:
+    if not token:
+        return error
+    redacted = error.replace(token, "[REDACTED]")
+    encoded = quote(token, safe="")
+    if encoded != token:
+        redacted = redacted.replace(encoded, "[REDACTED]")
+    return redacted
+
+
+def _clean_url(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.scheme and parsed.netloc:
+        return urlunsplit((parsed.scheme, parsed.hostname or "", parsed.path, parsed.query, parsed.fragment))
+    return url
+
+
+def ensure_bugfix_branch(
+    repo: Repo,
+    issue_number: int,
+    default_branch: str = "main",
+    token: Optional[str] = None,
+) -> str:
     branch_name = f"bugfix/{issue_number}"
     # Refresh remote refs
+    origin_url = repo.remotes.origin.url
     try:
+        if token:
+            repo.remotes.origin.set_url(_authenticated_url(_clean_url(origin_url), token))
         repo.remotes.origin.fetch()
     except GitCommandError:
         pass
+    finally:
+        repo.remotes.origin.set_url(_clean_url(origin_url))
 
     local_names = {ref.name for ref in repo.heads}
     remote_names = {ref.remote_head for ref in repo.remotes.origin.refs} if repo.remotes else set()
@@ -94,8 +130,16 @@ def commit_all(repo: Repo, message: str) -> bool:
         return False
 
 
-def push_branch(repo: Repo, branch_name: str) -> None:
-    repo.remotes.origin.push(refspec=f"{branch_name}:{branch_name}", set_upstream=True)
+def push_branch(repo: Repo, branch_name: str, token: Optional[str] = None) -> None:
+    origin_url = repo.remotes.origin.url
+    try:
+        if token:
+            repo.remotes.origin.set_url(_authenticated_url(_clean_url(origin_url), token))
+        repo.remotes.origin.push(refspec=f"{branch_name}:{branch_name}", set_upstream=True)
+    except GitCommandError as exc:
+        raise RuntimeError(_redact_git_error(str(exc), token)) from None
+    finally:
+        repo.remotes.origin.set_url(_clean_url(origin_url))
 
 
 def get_diff(repo: Repo, base: str = "HEAD") -> tuple[str, list[str]]:

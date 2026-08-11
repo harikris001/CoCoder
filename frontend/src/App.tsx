@@ -9,67 +9,80 @@ import { RepoPage } from "./pages/RepoPage";
 import { IssuesPage } from "./pages/IssuesPage";
 import { IssuePage } from "./pages/IssuePage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { SignInPage, SignUpPage } from "./pages/AuthPage";
+import { AuthProvider } from "./auth/AuthProvider";
+import { ProtectedRoute, PublicOnlyRoute } from "./components/RouteGuard";
 
 export default function App() {
   return (
     <ErrorBoundary>
       <BrowserRouter>
-        <ToastProvider>
-          <Routes>
-          <Route path="/" element={<LandingPage />} />
-          <Route
-            path="/dashboard"
-            element={
-              <Layout>
-                <DashboardPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/repos"
-            element={
-              <Layout>
-                <ReposPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/repos/:id"
-            element={
-              <Layout>
-                <RepoPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/issue"
-            element={
-              <Layout>
-                <IssuesPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/runs/:id"
-            element={
-              <Layout>
-                <IssuePage />
-              </Layout>
-            }
-          />
-          <Route path="/logs" element={<Navigate to="/dashboard" replace />} />
-          <Route
-            path="/settings"
-            element={
-              <Layout>
-                <SettingsPage />
-              </Layout>
-            }
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </ToastProvider>
-    </BrowserRouter>
+        <AuthProvider>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/signin"
+                element={<PublicOnlyRoute><SignInPage /></PublicOnlyRoute>}
+              />
+              <Route
+                path="/signup"
+                element={<PublicOnlyRoute><SignUpPage /></PublicOnlyRoute>}
+              />
+              <Route path="/" element={<LandingPage />} />
+              <Route
+                path="/dashboard"
+                element={
+                  <ProtectedRoute>
+                    <Layout><DashboardPage /></Layout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/repos"
+                element={
+                  <ProtectedRoute>
+                    <Layout><ReposPage /></Layout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/repos/:id"
+                element={
+                  <ProtectedRoute>
+                    <Layout><RepoPage /></Layout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/issue"
+                element={
+                  <ProtectedRoute>
+                    <Layout><IssuesPage /></Layout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/runs/:id"
+                element={
+                  <ProtectedRoute>
+                    <Layout><IssuePage /></Layout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="/logs" element={<Navigate to="/dashboard" replace />} />
+              <Route
+                path="/settings"
+                element={
+                  <ProtectedRoute>
+                    <Layout><SettingsPage /></Layout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </ToastProvider>
+        </AuthProvider>
+      </BrowserRouter>
   </ErrorBoundary>
   );
 }

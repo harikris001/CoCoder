@@ -51,6 +51,7 @@ class PipelineState(TypedDict, total=False):
     default_branch: str
     clone_url: str
     repo_db_id: int
+    user_id: int | None
     context: str
     pm: dict[str, Any]
     architecture: dict[str, Any]
@@ -64,6 +65,7 @@ class PipelineState(TypedDict, total=False):
     error: str
     resume: bool
     index_status: str
+    github_token: str
 
 
 def _structured(result: Any) -> dict[str, Any]:
@@ -225,10 +227,16 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
     try:
         attempt_started = await _begin_attempt(run_id)
         await _event(run_id, "clone", "Cloning / updating repository")
-        repo = ensure_repo(state["clone_url"], workspace, settings.github_token)
+        github_token = state.get("github_token") or settings.github_token
+        repo = ensure_repo(state["clone_url"], workspace, github_token)
 
         await _update_run(run_id, stage="branch")
-        branch = ensure_bugfix_branch(repo, state["issue_number"], state.get("default_branch") or "main")
+        branch = ensure_bugfix_branch(
+            repo,
+            state["issue_number"],
+            state.get("default_branch") or "main",
+            github_token,
+        )
         state["branch_name"] = branch
         await _update_run(run_id, branch_name=branch)
         await _event(run_id, "branch", f"Using branch {branch}")
@@ -271,7 +279,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
         else:
             await _update_run(run_id, stage="pm")
             await _event(run_id, "pm", "PM Agent analyzing issue")
-            pm_agent = PMAgent()
+            pm_agent = PMAgent(user_id=state.get("user_id"))
             pm = await _invoke_agent(
                 pm_agent,
                 (
@@ -292,7 +300,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
         else:
             await _update_run(run_id, stage="architecture")
             await _event(run_id, "architecture", "Architecture Agent mapping changes")
-            arch_agent = ArchitectureAgent()
+            arch_agent = ArchitectureAgent(user_id=state.get("user_id"))
             architecture = await _invoke_agent(
                 arch_agent,
                 (
@@ -316,7 +324,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
         else:
             await _update_run(run_id, stage="planner")
             await _event(run_id, "planner", "Task Planner creating tasks")
-            planner_agent = TaskPlannerAgent()
+            planner_agent = TaskPlannerAgent(user_id=state.get("user_id"))
             planner = await _invoke_agent(
                 planner_agent,
                 (
@@ -365,9 +373,9 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     f"Use tools to inspect and edit files in the repo workspace."
                 )
                 if owner == "frontend":
-                    agent = FrontendAgent()
+                    agent = FrontendAgent(user_id=state.get("user_id"))
                 else:
-                    agent = BackendAgent()
+                    agent = BackendAgent(user_id=state.get("user_id"))
                 configure_tools(workspace, state["repo_db_id"])
                 dev_out = await _invoke_agent(agent, prompt)
                 files_touched.extend(dev_out.get("files_modified") or [])
@@ -408,7 +416,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
 
             await _update_run(run_id, stage="review")
             await _event(run_id, "review", "Reviewer Agent checking changes")
-            reviewer = ReviewerAgent()
+            reviewer = ReviewerAgent(user_id=state.get("user_id"))
             configure_tools(workspace, state["repo_db_id"])
             review = await _invoke_agent(
                 reviewer,
@@ -456,11 +464,11 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
             f"fix: {state['issue_title']} (#{state['issue_number']})\n\nCoCoder automated fix.",
         )
         if committed:
-            push_branch(repo, branch)
+            push_branch(repo, branch, github_token)
         else:
             # Still try push in case commits already exist on branch
             try:
-                push_branch(repo, branch)
+                push_branch(repo, branch, github_token)
             except Exception as exc:
                 logger.warning("Push skipped/failed: %s", exc)
 
@@ -474,6 +482,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
             body=body,
             head=branch,
             base=state.get("default_branch") or "main",
+            token=github_token,
         )
 
         async with async_session_factory() as session:

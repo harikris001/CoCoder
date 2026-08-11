@@ -13,10 +13,53 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    sessions: Mapped[list[AuthSession]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    repos: Mapped[list[Repo]] = relationship(back_populates="user")
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class GitHubOAuthState(Base):
+    __tablename__ = "github_oauth_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    state_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Repo(Base):
     __tablename__ = "repos"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     owner: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
@@ -35,6 +78,7 @@ class Repo(Base):
     index_jobs: Mapped[list[IndexJob]] = relationship(
         back_populates="repo", cascade="all, delete-orphan"
     )
+    user: Mapped[Optional[User]] = relationship(back_populates="repos")
 
 
 class IndexJob(Base):
