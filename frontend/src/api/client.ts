@@ -150,6 +150,16 @@ export type LlmSettingsUpdate = {
   custom?: LlmProviderUpdate;
 };
 
+export type LlmModelOption = {
+  id: string;
+  name: string;
+};
+
+export type LlmModelsResponse = {
+  provider: LlmProviderId;
+  models: LlmModelOption[];
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const { headers, ...rest } = init || {};
   const res = await fetch(`${API_BASE}${path}`, {
@@ -266,4 +276,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  listLlmModels: (
+    provider: LlmProviderId,
+    opts?: { api_key?: string; base_url?: string },
+  ) => {
+    const body: {
+      provider: LlmProviderId;
+      api_key?: string;
+      base_url?: string;
+    } = { provider };
+    if (opts?.api_key?.trim()) body.api_key = opts.api_key.trim();
+    if (opts?.base_url?.trim()) body.base_url = opts.base_url.trim();
+    return request<LlmModelsResponse>("/settings/llm/models", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
 };

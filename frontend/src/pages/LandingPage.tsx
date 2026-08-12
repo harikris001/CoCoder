@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { useAuth } from "../auth/AuthProvider";
 import { BoltIcon } from "../components/icons";
 
 const LOG_SCRIPT: Array<[string, string]> = [
@@ -25,6 +26,7 @@ const LOG_CLS: Record<string, string> = {
 };
 
 export function LandingPage() {
+  const { status } = useAuth();
   const [shown, setShown] = useState<Array<{ cls: string; text: string }>>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -87,7 +89,17 @@ export function LandingPage() {
             <Link to="/repos" className="text-[14px] text-muted transition-colors hover:text-ink">Repositories</Link>
             <Link to="/issue" className="text-[14px] text-muted transition-colors hover:text-ink">Issues</Link>
           </div>
-          <Link to="/signin" className="btn btn-ghost ml-auto">Sign in</Link>
+          {status === "authenticated" ? (
+            <Link to="/dashboard" className="btn btn-primary ml-auto">
+              Dashboard
+            </Link>
+          ) : status === "unauthenticated" ? (
+            <Link to="/signin" className="btn btn-ghost ml-auto">
+              Sign in
+            </Link>
+          ) : (
+            <span className="ml-auto inline-block min-h-[44px] min-w-[96px]" aria-hidden />
+          )}
         </div>
       </nav>
 

@@ -121,6 +121,168 @@ def _build(resolved: ResolvedLlm, *, temperature: float) -> BaseChatModel:
     )
 
 
+@dataclass
+class ProviderModel:
+    id: str
+    name: str = ""
+
+
+def _dedupe_sort_models(models: list[ProviderModel]) -> list[ProviderModel]:
+    seen: set[str] = set()
+    out: list[ProviderModel] = []
+    for m in models:
+        mid = (m.id or "").strip()
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        out.append(ProviderModel(id=mid, name=(m.name or "").strip() or mid))
+    out.sort(key=lambda m: m.id.lower())
+    return out
+
+
+def _parse_openai_style(payload: dict) -> list[ProviderModel]:
+    rows = payload.get("data") or []
+    models: list[ProviderModel] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        mid = str(row.get("id") or "").strip()
+        if not mid:
+            continue
+        name = str(row.get("name") or row.get("display_name") or mid).strip()
+        models.append(ProviderModel(id=mid, name=name))
+    return _dedupe_sort_models(models)
+
+
+def _parse_anthropic(payload: dict) -> list[ProviderModel]:
+    rows = payload.get("data") or []
+    models: list[ProviderModel] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        mid = str(row.get("id") or "").strip()
+        if not mid:
+            continue
+        name = str(row.get("display_name") or row.get("name") or mid).strip()
+        models.append(ProviderModel(id=mid, name=name))
+    return _dedupe_sort_models(models)
+
+
+def _parse_google(payload: dict) -> list[ProviderModel]:
+    rows = payload.get("models") or []
+    models: list[ProviderModel] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        methods = row.get("supportedGenerationMethods") or row.get("supported_generation_methods")
+        if isinstance(methods, list) and methods and "generateContent" not in methods:
+            continue
+        raw_name = str(row.get("name") or "").strip()
+        if not raw_name:
+            continue
+        mid = raw_name.removeprefix("models/")
+        display = str(row.get("displayName") or row.get("display_name") or mid).strip()
+        models.append(ProviderModel(id=mid, name=display))
+    return _dedupe_sort_models(models)
+
+
+class ProviderModelsError(Exception):
+    """Raised when a provider models catalog cannot be fetched."""
+
+    def __init__(self, message: str, *, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+async def list_provider_models(
+    provider: ProviderId,
+    *,
+    api_key: str,
+    base_url: str = "",
+) -> list[ProviderModel]:
+    """Fetch and normalize the chat/model catalog for a provider."""
+    import httpx
+
+    key = api_key.strip()
+    if not key:
+        raise ProviderModelsError("API key is required", status_code=400)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if provider == "openrouter":
+                res = await client.get(
+                    "https://openrouter.ai/api/v1/models",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                if res.status_code >= 400:
+                    raise ProviderModelsError(
+                        f"OpenRouter rejected key ({res.status_code})",
+                        status_code=502,
+                    )
+                return _parse_openai_style(res.json())
+
+            if provider == "openai":
+                res = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                if res.status_code >= 400:
+                    raise ProviderModelsError(
+                        f"OpenAI rejected key ({res.status_code})",
+                        status_code=502,
+                    )
+                return _parse_openai_style(res.json())
+
+            if provider == "anthropic":
+                res = await client.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers={
+                        "x-api-key": key,
+                        "anthropic-version": "2023-06-01",
+                    },
+                )
+                if res.status_code >= 400:
+                    raise ProviderModelsError(
+                        f"Anthropic rejected key ({res.status_code})",
+                        status_code=502,
+                    )
+                return _parse_anthropic(res.json())
+
+            if provider == "google":
+                res = await client.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"key": key},
+                )
+                if res.status_code >= 400:
+                    raise ProviderModelsError(
+                        f"Google rejected key ({res.status_code})",
+                        status_code=502,
+                    )
+                return _parse_google(res.json())
+
+            if provider == "custom":
+                if not base_url.strip():
+                    raise ProviderModelsError("Base URL is required", status_code=400)
+                root = base_url.rstrip("/")
+                url = f"{root}/models" if root.endswith("/v1") else f"{root}/v1/models"
+                res = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                if res.status_code >= 400:
+                    raise ProviderModelsError(
+                        f"Custom endpoint rejected key ({res.status_code})",
+                        status_code=502,
+                    )
+                return _parse_openai_style(res.json())
+
+            raise ProviderModelsError(f"Unknown provider: {provider}", status_code=400)
+    except ProviderModelsError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderModelsError(str(exc) or "Connection failed", status_code=502) from exc
+
+
 async def probe_provider(
     provider: ProviderId,
     *,
@@ -129,77 +291,16 @@ async def probe_provider(
     base_url: str = "",
 ) -> tuple[bool, str]:
     """Lightweight connectivity check for Settings → Test."""
-    key = api_key.strip()
-    if not key:
-        return False, "API key is required"
+    del model  # connectivity probe does not need a specific model id
     try:
-        if provider == "openrouter":
-            import httpx
-
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                res = await client.get(
-                    "https://openrouter.ai/api/v1/models",
-                    headers={"Authorization": f"Bearer {key}"},
-                )
-            if res.status_code >= 400:
-                return False, f"OpenRouter rejected key ({res.status_code})"
-            return True, "OpenRouter key ok"
-
-        if provider == "openai":
-            import httpx
-
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                res = await client.get(
-                    "https://api.openai.com/v1/models",
-                    headers={"Authorization": f"Bearer {key}"},
-                )
-            if res.status_code >= 400:
-                return False, f"OpenAI rejected key ({res.status_code})"
-            return True, "OpenAI key ok"
-
-        if provider == "anthropic":
-            import httpx
-
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                res = await client.get(
-                    "https://api.anthropic.com/v1/models",
-                    headers={
-                        "x-api-key": key,
-                        "anthropic-version": "2023-06-01",
-                    },
-                )
-            if res.status_code >= 400:
-                return False, f"Anthropic rejected key ({res.status_code})"
-            return True, "Anthropic key ok"
-
-        if provider == "google":
-            import httpx
-
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                res = await client.get(
-                    "https://generativelanguage.googleapis.com/v1beta/models",
-                    params={"key": key},
-                )
-            if res.status_code >= 400:
-                return False, f"Google rejected key ({res.status_code})"
-            return True, "Google key ok"
-
-        if provider == "custom":
-            if not base_url.strip():
-                return False, "Base URL is required"
-            import httpx
-
-            root = base_url.rstrip("/")
-            url = f"{root}/models" if root.endswith("/v1") else f"{root}/v1/models"
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                res = await client.get(
-                    url,
-                    headers={"Authorization": f"Bearer {key}"},
-                )
-            if res.status_code >= 400:
-                return False, f"Custom endpoint rejected key ({res.status_code})"
-            return True, "Custom endpoint ok"
-
-        return False, f"Unknown provider: {provider}"
-    except Exception as exc:  # noqa: BLE001
-        return False, str(exc) or "Connection failed"
+        models = await list_provider_models(provider, api_key=api_key, base_url=base_url)
+        label = {
+            "openrouter": "OpenRouter",
+            "openai": "OpenAI",
+            "anthropic": "Anthropic",
+            "google": "Google",
+            "custom": "Custom endpoint",
+        }.get(provider, provider)
+        return True, f"{label} key ok ({len(models)} models)"
+    except ProviderModelsError as exc:
+        return False, str(exc)
