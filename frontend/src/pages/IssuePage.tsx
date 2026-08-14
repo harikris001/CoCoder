@@ -10,6 +10,7 @@ import {
 import {
   BoltIcon,
   CheckIcon,
+  ClockIcon,
   CopyIcon,
   PlayIcon,
   SearchIcon,
@@ -19,10 +20,7 @@ import { Markdown } from "../components/Markdown";
 import { Crumb, TopbarShell } from "../components/Topbar";
 import { useToast } from "../components/Toast";
 import { useRunEvents } from "../hooks/useRunEvents";
-
-const LIVE = new Set(["queued", "running"]);
-const DONE = new Set(["completed", "done"]);
-const FAILED = new Set(["failed", "error", "needs_human"]);
+import { AWAITING, DISCARDED, DONE, FAILED, LIVE } from "../utils/format";
 
 const PIPELINE = [
   "clone",
@@ -32,6 +30,7 @@ const PIPELINE = [
   "planner",
   "develop",
   "review",
+  "awaiting_push",
   "gitops",
 ] as const;
 
@@ -45,10 +44,12 @@ const STAGE_ORDER = [
   "planner",
   "develop",
   "review",
+  "awaiting_push",
   "gitops",
   "done",
   "failed",
   "needs_human",
+  "discarded",
 ];
 
 type LineCls = "cmd" | "ok" | "tool" | "warn" | "file";
@@ -69,7 +70,7 @@ function stageIndex(stage: string): number {
 function lineClass(stage: string, message: string): LineCls {
   const s = stage.toLowerCase();
   const m = message.toLowerCase();
-  if (s === "failed" || s === "needs_human" || m.includes("fail")) return "warn";
+  if (s === "failed" || s === "needs_human" || s === "discarded" || m.includes("fail")) return "warn";
   if (s === "done" || m.includes("pr opened") || m.includes("complete")) return "ok";
   if (["clone", "branch", "gitops"].includes(s)) return "cmd";
   if (m.includes("patch") || m.includes("file") || s === "develop") return "file";
@@ -146,12 +147,15 @@ function IssueRunView({ runId }: { runId: number }) {
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [logQuery, setLogQuery] = useState("");
   const [logStage, setLogStage] = useState<string>("all");
+  const [changeComment, setChangeComment] = useState("");
   const statusRef = useRef<string | null>(null);
   const termEl = useRef<HTMLDivElement>(null);
 
   const isLive = !!run && LIVE.has(run.status);
   const isDone = !!run && DONE.has(run.status);
   const isFailed = !!run && FAILED.has(run.status);
+  const isAwaiting = !!run && AWAITING.has(run.status);
+  const isDiscarded = !!run && DISCARDED.has(run.status);
 
   const { events: liveEvents, connected, lastStatus } = useRunEvents(
     Number.isFinite(runId) ? runId : null,
@@ -282,6 +286,58 @@ function IssueRunView({ runId }: { runId: number }) {
     }
   }
 
+  async function approvePush() {
+    if (!Number.isFinite(runId)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.approveRun(runId);
+      toast(`Run #${runId} pushing and opening PR`);
+      await load();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      toast(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requestChanges() {
+    if (!Number.isFinite(runId)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.requestRunChanges(runId, changeComment.trim() || undefined);
+      toast(`Run #${runId} sent back to the agent`);
+      setChangeComment("");
+      await load();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      toast(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function discardPush() {
+    if (!Number.isFinite(runId)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.discardRun(runId);
+      toast(`Run #${runId} discarded — nothing was pushed`);
+      await load();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      toast(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function copyLog() {
     const source = visibleEvents.length && (logQuery || logStage !== "all") ? visibleEvents : events;
     const text = source
@@ -335,14 +391,22 @@ function IssueRunView({ runId }: { runId: number }) {
       ? "pill-ok"
       : isFailed
         ? "pill-err"
-        : "pill-queued";
+        : isAwaiting
+          ? "pill-queued"
+          : isDiscarded
+            ? "pill-off"
+            : "pill-queued";
   const statusLabel = isLive
     ? run.status
     : isDone
       ? "completed"
-      : isFailed
-        ? run.status
-        : run.status;
+      : isAwaiting
+        ? "awaiting push"
+        : isDiscarded
+          ? "discarded"
+          : isFailed
+            ? run.status
+            : run.status;
 
   return (
     <div className="min-w-0">
@@ -367,7 +431,7 @@ function IssueRunView({ runId }: { runId: number }) {
               <CopyIcon size={16} />
               Copy log
             </button>
-            {(isFailed || isDone) && (
+            {(isFailed || isDone) && !isAwaiting && (
               <button
                 type="button"
                 className="btn btn-primary"
@@ -376,6 +440,17 @@ function IssueRunView({ runId }: { runId: number }) {
               >
                 <PlayIcon size={16} />
                 {busy ? "Queuing…" : isFailed ? "Resume run" : "Re-run agent"}
+              </button>
+            )}
+            {isAwaiting && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => void approvePush()}
+              >
+                <PlayIcon size={16} />
+                {busy ? "Working…" : "Approve push"}
               </button>
             )}
             {isLive && (
@@ -532,6 +607,7 @@ function IssueRunView({ runId }: { runId: number }) {
                     const done = s.state === "done";
                     const active = s.state === "active";
                     const err = s.state === "error";
+                    const waiting = active && s.key === "awaiting_push";
                     const output = outputForStep(run, s.outputField);
                     const clickable = output != null;
                     return (
@@ -552,13 +628,17 @@ function IssueRunView({ runId }: { runId: number }) {
                               ? "border-accent bg-accent-soft"
                               : err
                                 ? "border-danger bg-danger-soft"
-                                : active
-                                  ? "border-info bg-info-soft"
-                                  : "border-line-strong bg-surface"
+                                : waiting
+                                  ? "border-warn bg-warn-soft"
+                                  : active
+                                    ? "border-info bg-info-soft"
+                                    : "border-line-strong bg-surface"
                           }`}
                         >
                           {done ? (
                             <CheckIcon size={15} className="text-accent-ink" />
+                          ) : waiting ? (
+                            <ClockIcon size={15} className="animate-pulse text-warn-ink" />
                           ) : active ? (
                             <SpinnerIcon size={15} className="animate-spin text-info-ink" />
                           ) : err ? (
@@ -571,7 +651,13 @@ function IssueRunView({ runId }: { runId: number }) {
                           <div className="flex items-center gap-2">
                             <div
                               className={`text-[13.5px] font-semibold ${
-                                active ? "text-info-ink" : err ? "text-danger-ink" : ""
+                                waiting
+                                  ? "text-warn-ink"
+                                  : active
+                                    ? "text-info-ink"
+                                    : err
+                                      ? "text-danger-ink"
+                                      : ""
                               }`}
                             >
                               {s.title}
@@ -799,6 +885,54 @@ function IssueRunView({ runId }: { runId: number }) {
           </div>
 
           {/* Diff */}
+          {isAwaiting && (
+            <section className="mt-5 overflow-hidden rounded-[14px] border border-line bg-surface">
+              <div className="border-b border-line px-5 py-3.5">
+                <h3 className="text-[14px] font-semibold tracking-tight">Review before push</h3>
+                <p className="mt-1 text-[13px] text-muted">
+                  Inspect the diff below, then approve to push and open a PR, send the agent back
+                  with notes, or discard without pushing.
+                </p>
+              </div>
+              <div className="p-5">
+                <textarea
+                  value={changeComment}
+                  onChange={(e) => setChangeComment(e.target.value)}
+                  placeholder="Optional notes if you request changes…"
+                  rows={3}
+                  className="w-full rounded-lg border border-line bg-canvas px-3 py-2 text-[13px] text-ink outline-none placeholder:text-faint focus:border-transparent focus:outline-2 focus:outline-accent"
+                />
+                <div className="mt-3 flex flex-wrap gap-2.5">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={busy}
+                    onClick={() => void approvePush()}
+                  >
+                    <PlayIcon size={16} />
+                    {busy ? "Working…" : "Approve push & open PR"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={busy}
+                    onClick={() => void requestChanges()}
+                  >
+                    Request changes
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={busy}
+                    onClick={() => void discardPush()}
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+
           {(diff?.diff || "").trim() && (
             <section className="mt-5 overflow-hidden rounded-[14px] border border-line bg-surface">
               <div className="flex items-center justify-between border-b border-line px-5 py-3.5">

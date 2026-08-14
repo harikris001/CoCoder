@@ -17,13 +17,14 @@ import {
 } from "../components/icons";
 import { Crumb, SearchBox, TopbarShell } from "../components/Topbar";
 import { useToast } from "../components/Toast";
-import { DONE, FAILED, LIVE, formatRelative } from "../utils/format";
+import { AWAITING, DISCARDED, DONE, FAILED, LIVE, formatRelative } from "../utils/format";
 
-type RunFilter = "all" | "running" | "done" | "failed" | "pr";
+type RunFilter = "all" | "running" | "done" | "failed" | "pr" | "awaiting";
 
 const RUN_FILTERS: Array<{ key: RunFilter; label: string }> = [
   { key: "all", label: "All" },
   { key: "running", label: "Running" },
+  { key: "awaiting", label: "Awaiting push" },
   { key: "done", label: "Completed" },
   { key: "failed", label: "Failed" },
   { key: "pr", label: "PR open" },
@@ -35,6 +36,10 @@ function runPill(run: RunSummary) {
       return <span className="pill pill-queued">queued</span>;
     return <span className="pill pill-running">running · {run.stage}</span>;
   }
+  if (AWAITING.has(run.status))
+    return <span className="pill pill-queued">awaiting push</span>;
+  if (DISCARDED.has(run.status))
+    return <span className="pill pill-off">discarded</span>;
   if (FAILED.has(run.status))
     return (
       <span className="pill pill-err">
@@ -124,6 +129,8 @@ export function RepoPage() {
             ? LIVE.has(r.status)
             : filter === "done"
               ? DONE.has(r.status)
+              : filter === "awaiting"
+                ? AWAITING.has(r.status)
               : filter === "failed"
                 ? FAILED.has(r.status)
                 : !!r.pr_url;

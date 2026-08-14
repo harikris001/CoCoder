@@ -24,6 +24,10 @@ _REPO_COLUMN_MIGRATIONS: list[tuple[str, str]] = [
     ("user_id", "INTEGER"),
 ]
 
+_USER_COLUMN_MIGRATIONS: list[tuple[str, str]] = [
+    ("require_push_approval", "BOOLEAN DEFAULT 1 NOT NULL"),
+]
+
 
 async def _migrate_sqlite_columns() -> None:
     """Add missing columns on existing SQLite DBs (create_all does not alter)."""
@@ -41,6 +45,12 @@ async def _migrate_sqlite_columns() -> None:
         for column, col_type in _REPO_COLUMN_MIGRATIONS:
             if column not in existing:
                 await conn.execute(text(f"ALTER TABLE repos ADD COLUMN {column} {col_type}"))
+
+        result = await conn.execute(text("PRAGMA table_info(users)"))
+        existing = {row[1] for row in result.fetchall()}
+        for column, col_type in _USER_COLUMN_MIGRATIONS:
+            if column not in existing:
+                await conn.execute(text(f"ALTER TABLE users ADD COLUMN {column} {col_type}"))
 
 
 async def init_db() -> None:

@@ -6,9 +6,12 @@ from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import get_current_user
 from db.models import User
+from db.session import get_db
 from llm.factory import ProviderModelsError, list_provider_models, probe_provider, resolve_llm_config
 from secure_store import (
     GitHubCredential,
@@ -105,6 +108,14 @@ class GitHubTestOut(BaseModel):
     message: str
     login: str | None = None
     scopes: list[str] = Field(default_factory=list)
+
+
+class PreferencesOut(BaseModel):
+    require_push_approval: bool
+
+
+class PreferencesUpdate(BaseModel):
+    require_push_approval: bool
 
 
 def _status_map(secrets) -> dict[str, ProviderStatus]:
@@ -289,3 +300,22 @@ async def delete_github_pat(user: User = Depends(get_current_user)) -> GitHubSta
 async def delete_github_oauth(user: User = Depends(get_current_user)) -> GitHubStatusOut:
     clear_github_credential(user.id, "oauth")
     return GitHubStatusOut(**github_status(user.id))
+
+
+@router.get("/preferences", response_model=PreferencesOut)
+async def get_preferences(user: User = Depends(get_current_user)) -> PreferencesOut:
+    return PreferencesOut(require_push_approval=user.require_push_approval is not False)
+
+
+@router.put("/preferences", response_model=PreferencesOut)
+async def put_preferences(
+    body: PreferencesUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> PreferencesOut:
+    result = await db.execute(select(User).where(User.id == user.id))
+    row = result.scalar_one()
+    row.require_push_approval = body.require_push_approval
+    await db.commit()
+    await db.refresh(row)
+    return PreferencesOut(require_push_approval=bool(row.require_push_approval))

@@ -19,7 +19,7 @@ from agents import (
 )
 from api.services import append_run_event, upsert_pull_request
 from config import get_settings
-from db.models import Run
+from db.models import Run, User
 from db.session import async_session_factory
 from indexing.hybrid import HybridIndexer
 from indexing.retrieve import format_context_pack
@@ -210,6 +210,132 @@ async def _accumulate_execution(run_id: int, attempt_started: float, **fields: A
         run.updated_at = datetime.now(timezone.utc)
         await session.commit()
         return total
+
+
+async def _require_push_approval(user_id: int | None) -> bool:
+    if not user_id:
+        return True
+    async with async_session_factory() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if user is None:
+            return True
+        return user.require_push_approval is not False
+
+
+async def finish_gitops(
+    state: PipelineState,
+    *,
+    attempt_started: float | None = None,
+) -> PipelineState:
+    """Commit, push, and open the PR for a run that already passed review."""
+    settings = get_settings()
+    run_id = state["run_id"]
+    workspace = Path(state["workspace"])
+    configure_tools(workspace, state["repo_db_id"])
+    github_token = state.get("github_token") or settings.github_token
+    files_touched: list[str] = list(state.get("files_touched") or [])
+    completed_task_ids: list[str] = list(state.get("completed_task_ids") or [])
+    checkpoint_stage = state.get("checkpoint_stage") or "review"
+    started = attempt_started if attempt_started is not None else time.monotonic()
+
+    if attempt_started is None:
+        await _update_run(
+            run_id,
+            status="running",
+            stage="gitops",
+            error=None,
+            finished_at=None,
+            attempt_started_at=datetime.now(timezone.utc),
+        )
+    else:
+        await _update_run(run_id, stage="gitops")
+
+    await _event(run_id, "gitops", "Committing and opening PR")
+    repo = ensure_repo(state["clone_url"], workspace, github_token)
+    branch = state.get("branch_name") or ensure_bugfix_branch(
+        repo,
+        state["issue_number"],
+        state.get("default_branch") or "main",
+        github_token,
+    )
+    state["branch_name"] = branch
+
+    summary = (state.get("pm") or {}).get("goal") or state["issue_title"]
+    committed = commit_all(
+        repo,
+        f"fix: {state['issue_title']} (#{state['issue_number']})\n\nCoCoder automated fix.",
+    )
+    if committed:
+        push_branch(repo, branch, github_token)
+    else:
+        try:
+            push_branch(repo, branch, github_token)
+        except Exception as exc:
+            logger.warning("Push skipped/failed: %s", exc)
+
+    files = changed_files(repo, state.get("default_branch") or "main") or files_touched
+    title = f"Fix: {state['issue_title']}"
+    body = build_pr_body(state["issue_number"], summary, files)
+    pr = create_pull_request(
+        state["owner"],
+        state["name"],
+        title=title,
+        body=body,
+        head=branch,
+        base=state.get("default_branch") or "main",
+        token=github_token,
+    )
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Run).where(Run.id == run_id).options(selectinload(Run.pull_request))
+        )
+        run = result.scalar_one()
+        delta = max(0, int(time.monotonic() - started))
+        run.execution_seconds = int(run.execution_seconds or 0) + delta
+        run.attempt_started_at = None
+        if pr.get("error"):
+            await append_run_event(
+                session,
+                run,
+                stage="gitops",
+                message=f"PR creation failed: {pr.get('message')}",
+                payload=pr,
+            )
+            run.status = "failed"
+            run.error = str(pr.get("message"))
+            run.checkpoint_stage = checkpoint_stage
+            run.finished_at = datetime.now(timezone.utc)
+        else:
+            await upsert_pull_request(
+                session,
+                run,
+                title=title,
+                body=body,
+                number=pr.get("number"),
+                url=pr.get("html_url"),
+                state=pr.get("state") or "open",
+            )
+            await append_run_event(
+                session,
+                run,
+                stage="done",
+                message=f"PR opened: {pr.get('html_url')}",
+                payload={"pr": pr.get("html_url"), "number": pr.get("number")},
+            )
+            run.status = "completed"
+            run.stage = "done"
+            run.checkpoint_stage = "done"
+            run.finished_at = datetime.now(timezone.utc)
+            run.files_touched = files
+        await session.commit()
+
+    state["status"] = "completed" if not pr.get("error") else "failed"
+    state["files_touched"] = files
+    state["completed_task_ids"] = completed_task_ids
+    state["checkpoint_stage"] = "done" if not pr.get("error") else (checkpoint_stage or "gitops")
+    return state
 
 
 async def run_pipeline(state: PipelineState) -> PipelineState:
@@ -455,85 +581,29 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 state["checkpoint_stage"] = checkpoint_stage or "review"
                 return state
 
-        # GitOps
-        await _update_run(run_id, stage="gitops")
-        await _event(run_id, "gitops", "Committing and opening PR")
-        summary = (state.get("pm") or {}).get("goal") or state["issue_title"]
-        committed = commit_all(
-            repo,
-            f"fix: {state['issue_title']} (#{state['issue_number']})\n\nCoCoder automated fix.",
-        )
-        if committed:
-            push_branch(repo, branch, github_token)
-        else:
-            # Still try push in case commits already exist on branch
-            try:
-                push_branch(repo, branch, github_token)
-            except Exception as exc:
-                logger.warning("Push skipped/failed: %s", exc)
-
-        files = changed_files(repo, state.get("default_branch") or "main") or files_touched
-        title = f"Fix: {state['issue_title']}"
-        body = build_pr_body(state["issue_number"], summary, files)
-        pr = create_pull_request(
-            state["owner"],
-            state["name"],
-            title=title,
-            body=body,
-            head=branch,
-            base=state.get("default_branch") or "main",
-            token=github_token,
-        )
-
-        async with async_session_factory() as session:
-            result = await session.execute(
-                select(Run).where(Run.id == run_id).options(selectinload(Run.pull_request))
+        if await _require_push_approval(state.get("user_id")):
+            await _accumulate_execution(
+                run_id,
+                attempt_started,
+                status="awaiting_push",
+                stage="awaiting_push",
+                error=None,
+                files_touched=files_touched,
+                completed_task_ids=completed_task_ids,
+                checkpoint_stage=checkpoint_stage or "review",
             )
-            run = result.scalar_one()
-            delta = max(0, int(time.monotonic() - attempt_started))
-            run.execution_seconds = int(run.execution_seconds or 0) + delta
-            run.attempt_started_at = None
-            if pr.get("error"):
-                await append_run_event(
-                    session,
-                    run,
-                    stage="gitops",
-                    message=f"PR creation failed: {pr.get('message')}",
-                    payload=pr,
-                )
-                run.status = "failed"
-                run.error = str(pr.get("message"))
-                run.checkpoint_stage = checkpoint_stage
-                run.finished_at = datetime.now(timezone.utc)
-            else:
-                await upsert_pull_request(
-                    session,
-                    run,
-                    title=title,
-                    body=body,
-                    number=pr.get("number"),
-                    url=pr.get("html_url"),
-                    state=pr.get("state") or "open",
-                )
-                await append_run_event(
-                    session,
-                    run,
-                    stage="done",
-                    message=f"PR opened: {pr.get('html_url')}",
-                    payload={"pr": pr.get("html_url"), "number": pr.get("number")},
-                )
-                run.status = "completed"
-                run.stage = "done"
-                run.checkpoint_stage = "done"
-                run.finished_at = datetime.now(timezone.utc)
-                run.files_touched = files
-            await session.commit()
+            await _event(
+                run_id,
+                "awaiting_push",
+                "Review approved — waiting for you to inspect the diff before push",
+            )
+            state["status"] = "awaiting_push"
+            state["files_touched"] = files_touched
+            state["completed_task_ids"] = completed_task_ids
+            state["checkpoint_stage"] = checkpoint_stage or "review"
+            return state
 
-        state["status"] = "completed" if not pr.get("error") else "failed"
-        state["files_touched"] = files
-        state["completed_task_ids"] = completed_task_ids
-        state["checkpoint_stage"] = "done" if not pr.get("error") else (checkpoint_stage or "gitops")
-        return state
+        return await finish_gitops(state, attempt_started=attempt_started)
 
     except Exception as exc:
         logger.exception("Pipeline failed for run %s", run_id)

@@ -329,6 +329,7 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [requirePushApproval, setRequirePushApproval] = useState(true);
 
   const applyLlm = useCallback((next: LlmSettings) => {
     setLlm(next);
@@ -346,8 +347,15 @@ export function SettingsPage() {
       setLoading(true);
       setError(null);
       try {
-        const [, githubSettings] = await Promise.all([loadLlm(), api.getGithubSettings()]);
-        if (!cancelled) setGithub(githubSettings);
+        const [, githubSettings, prefs] = await Promise.all([
+          loadLlm(),
+          api.getGithubSettings(),
+          api.getPreferences(),
+        ]);
+        if (!cancelled) {
+          setGithub(githubSettings);
+          setRequirePushApproval(prefs.require_push_approval);
+        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -493,6 +501,22 @@ export function SettingsPage() {
     }
   }
 
+  async function savePushPreference(next: boolean) {
+    const prev = requirePushApproval;
+    setRequirePushApproval(next);
+    setBusy("prefs");
+    try {
+      const saved = await api.updatePreferences({ require_push_approval: next });
+      setRequirePushApproval(saved.require_push_approval);
+      toast(saved.require_push_approval ? "Will wait for your review before push" : "Agent will push automatically");
+    } catch (e) {
+      setRequirePushApproval(prev);
+      toast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const active = llm?.active_provider || "openrouter";
 
   return (
@@ -529,6 +553,44 @@ export function SettingsPage() {
             description="Choose light, dark, or match the operating system."
           >
             <ThemeToggle variant="segmented" />
+          </SectionCard>
+
+          <SectionCard
+            title="Push & PRs"
+            description="After the reviewer agent approves, either inspect the diff yourself or let CoCoder push and open the PR."
+          >
+            <div
+              role="group"
+              aria-label="Push approval"
+              className="grid grid-cols-2 gap-1 rounded-xl border border-line bg-canvas p-1"
+            >
+              <button
+                type="button"
+                aria-pressed={requirePushApproval}
+                disabled={busy === "prefs"}
+                onClick={() => void savePushPreference(true)}
+                className={`flex min-h-[40px] items-center justify-center rounded-lg px-3 text-[13px] transition-colors ${
+                  requirePushApproval
+                    ? "bg-accent-soft font-semibold text-accent-ink"
+                    : "text-muted hover:bg-surface hover:text-ink"
+                }`}
+              >
+                Review before push
+              </button>
+              <button
+                type="button"
+                aria-pressed={!requirePushApproval}
+                disabled={busy === "prefs"}
+                onClick={() => void savePushPreference(false)}
+                className={`flex min-h-[40px] items-center justify-center rounded-lg px-3 text-[13px] transition-colors ${
+                  !requirePushApproval
+                    ? "bg-accent-soft font-semibold text-accent-ink"
+                    : "text-muted hover:bg-surface hover:text-ink"
+                }`}
+              >
+                Push automatically
+              </button>
+            </div>
           </SectionCard>
 
           <SectionCard
