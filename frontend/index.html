@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CoCoder</title>
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem("cocoder.theme") || "system";
+          var dark =
+            pref === "dark" ||
+            (pref !== "light" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+          var m = document.querySelector('meta[name="theme-color"]');
+          if (!m) { m = document.createElement("meta"); m.name = "theme-color"; document.head.appendChild(m); }
+          m.content = dark ? "#1a1c2e" : "#f8f8fc";
+        } catch (e) {}
+      })();
+    </script>
     <meta
       name="description"
       content="CoCoder — Autonomous AI Coding Agent Dashboard for GitHub issues and automated pull requests."

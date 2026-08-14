@@ -11,6 +11,7 @@ import {
 import { TopbarShell } from "../components/Topbar";
 import { useToast } from "../components/Toast";
 import { CheckIcon, EyeIcon, EyeOffIcon } from "../components/icons";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { useAuth } from "../auth/AuthProvider";
 
 const PROVIDERS: Array<{
@@ -522,6 +523,13 @@ export function SettingsPage() {
               {error}
             </div>
           )}
+
+          <SectionCard
+            title="Appearance"
+            description="Choose light, dark, or match the operating system."
+          >
+            <ThemeToggle variant="segmented" />
+          </SectionCard>
 
           <SectionCard
             title="GitHub"

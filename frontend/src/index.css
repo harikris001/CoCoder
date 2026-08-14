@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   /* canvas & surfaces */
   --color-canvas: oklch(98% 0.005 250);
@@ -37,6 +39,10 @@
   --color-ondark-dim: oklch(68% 0.02 250);
   --color-ok: oklch(72% 0.15 150);
   --color-err: oklch(70% 0.18 25);
+
+  /* log/terminal accent colors */
+  --color-log-tool: oklch(70% 0.12 250);
+  --color-log-warn: oklch(78% 0.14 70);
 
   --font-sans: "Outfit", -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
     system-ui, sans-serif;
@@ -145,9 +151,52 @@
   }
 }
 
+@layer theme {
+  html.dark {
+    --color-canvas: oklch(16% 0.02 250);
+    --color-surface: oklch(22% 0.02 250);
+    --color-ink: oklch(93% 0.01 240);
+    --color-muted: oklch(72% 0.018 240);
+    --color-faint: oklch(58% 0.015 240);
+    --color-line: oklch(32% 0.018 240);
+    --color-line-strong: oklch(40% 0.02 240);
+
+    --color-accent: oklch(68% 0.16 145);
+    --color-accent-solid: oklch(56% 0.16 150);
+    --color-accent-hover: oklch(62% 0.16 150);
+    --color-accent-ink: oklch(82% 0.12 150);
+    --color-accent-soft: oklch(28% 0.05 150);
+    --color-accent-soft-line: oklch(38% 0.06 150);
+
+    --color-danger: oklch(64% 0.18 27);
+    --color-danger-ink: oklch(82% 0.1 27);
+    --color-danger-soft: oklch(28% 0.06 25);
+    --color-info: oklch(66% 0.12 250);
+    --color-info-ink: oklch(82% 0.06 250);
+    --color-info-soft: oklch(28% 0.04 250);
+    --color-warn: oklch(76% 0.14 70);
+    --color-warn-ink: oklch(86% 0.08 65);
+    --color-warn-soft: oklch(30% 0.05 70);
+
+    --color-dark: oklch(11% 0.02 250);
+    --color-dark-raise: oklch(16% 0.02 250);
+    --color-dark-line: oklch(26% 0.02 250);
+    --color-ondark: oklch(92% 0.01 250);
+    --color-ondark-dim: oklch(68% 0.02 250);
+  }
+}
+
 @layer base {
   * {
     box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
   }
 
   html,
@@ -184,6 +233,15 @@
 
   button {
     font-family: inherit;
+  }
+
+  /* Scrollbar theming */
+  html {
+    scrollbar-color: oklch(75% 0.01 240) transparent;
+  }
+
+  html.dark {
+    scrollbar-color: oklch(38% 0.02 240) transparent;
   }
 }
 
@@ -340,8 +398,8 @@
     border-radius: 50%;
     background: radial-gradient(
       ellipse at center,
-      oklch(94.5% 0.035 150 / 0.9) 0%,
-      oklch(98% 0.005 250 / 0) 70%
+      color-mix(in oklch, var(--color-accent-soft) 90%, transparent) 0%,
+      color-mix(in oklch, var(--color-canvas) 0%, transparent) 70%
     );
     pointer-events: none;
   }
@@ -353,7 +411,7 @@
   }
 
   .idle-shadow {
-    fill: oklch(22% 0.02 240 / 0.08);
+    fill: color-mix(in oklch, var(--color-ink) 8%, transparent);
     transform-origin: 180px 248px;
     animation: var(--animate-idle-breathe);
   }
@@ -385,7 +443,7 @@
   }
 
   .idle-z {
-    fill: oklch(50% 0.018 240);
+    fill: var(--color-muted);
     font-family: var(--font-mono);
     font-weight: 500;
   }
@@ -563,4 +621,13 @@
     color: var(--color-ink);
     font-weight: 600;
   }
+}
+
+/* Theme transition — only applied during manual toggle to prevent flash on load */
+html.theme-transition,
+html.theme-transition *,
+html.theme-transition *::before,
+html.theme-transition *::after {
+  transition: background-color 0.2s ease, color 0.15s ease, border-color 0.15s ease !important;
+  transition-delay: 0s !important;
 }

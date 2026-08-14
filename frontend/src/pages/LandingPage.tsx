@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { BoltIcon } from "../components/icons";
+import { ThemeToggle } from "../components/ThemeToggle";
 
 const LOG_SCRIPT: Array<[string, string]> = [
   ["act", "$ cocoder run --issue 482 --repo acme/api-gateway"],
@@ -20,9 +21,9 @@ const LOG_SCRIPT: Array<[string, string]> = [
 
 const LOG_CLS: Record<string, string> = {
   act: "text-ondark",
-  tool: "text-[oklch(70%_0.12_250)]",
+  tool: "text-log-tool",
   ok: "text-ok",
-  warn: "text-[oklch(78%_0.14_70)]",
+  warn: "text-log-warn",
 };
 
 export function LandingPage() {
@@ -89,17 +90,20 @@ export function LandingPage() {
             <Link to="/repos" className="text-[14px] text-muted transition-colors hover:text-ink">Repositories</Link>
             <Link to="/issue" className="text-[14px] text-muted transition-colors hover:text-ink">Issues</Link>
           </div>
-          {status === "authenticated" ? (
-            <Link to="/dashboard" className="btn btn-primary ml-auto">
-              Dashboard
-            </Link>
-          ) : status === "unauthenticated" ? (
-            <Link to="/signin" className="btn btn-ghost ml-auto">
-              Sign in
-            </Link>
-          ) : (
-            <span className="ml-auto inline-block min-h-[44px] min-w-[96px]" aria-hidden />
-          )}
+          <div className="ml-auto flex items-center gap-2.5">
+            <ThemeToggle />
+            {status === "authenticated" ? (
+              <Link to="/dashboard" className="btn btn-primary">
+                Dashboard
+              </Link>
+            ) : status === "unauthenticated" ? (
+              <Link to="/signin" className="btn btn-ghost">
+                Sign in
+              </Link>
+            ) : (
+              <span className="inline-block min-h-[44px] min-w-[96px]" aria-hidden />
+            )}
+          </div>
         </div>
       </nav>
 
@@ -137,7 +141,7 @@ export function LandingPage() {
           </div>
 
           {/* Console */}
-          <div className="overflow-hidden rounded-[14px] border border-dark-line bg-dark shadow-[0_24px_60px_-24px_oklch(20%_0.1_250/0.45)]">
+          <div className="overflow-hidden rounded-[14px] border border-dark-line bg-dark shadow-[0_24px_60px_-24px_oklch(20%_0.1_250/0.45)] dark:shadow-[0_24px_60px_-24px_oklch(0%_0_0/0.6)]">
             <div className="flex items-center gap-2 border-b border-dark-line px-4 py-3">
               <span className="size-2.5 rounded-full bg-[oklch(64%_0.12_25)]" />
               <span className="size-2.5 rounded-full bg-[oklch(80%_0.14_90)]" />
@@ -200,7 +204,7 @@ export function LandingPage() {
         <div className="mx-auto max-w-[1200px] px-8 max-[860px]:px-5">
           <div className="flex items-center gap-9 rounded-2xl bg-dark p-10 text-ondark max-[860px]:flex-col max-[860px]:items-start max-[860px]:p-8">
             <div>
-              <span className="inline-flex items-center rounded-full border border-dark-line bg-white/5 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.09em] text-ondark-dim">
+              <span className="inline-flex items-center rounded-full border border-dark-line bg-ondark/5 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.09em] text-ondark-dim">
                 Stop polling timestamps
               </span>
               <h2 className="mb-3 mt-3 text-[26px] font-semibold leading-tight tracking-tight">
@@ -219,7 +223,7 @@ export function LandingPage() {
               </div>
               <div className="flex justify-between gap-4 border-b border-dark-line py-3 text-[13px] last:border-0">
                 <span className="text-ondark-dim">acme/mobile-app</span>
-                <b className="text-[oklch(70%_0.12_250)]">running · step 4/6</b>
+                <b className="text-log-tool">running · step 4/6</b>
               </div>
               <div className="flex justify-between gap-4 border-b border-dark-line py-3 text-[13px] last:border-0">
                 <span className="text-ondark-dim">acme/payments-core</span>

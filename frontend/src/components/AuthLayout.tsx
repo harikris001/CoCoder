@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { BoltIcon } from "./icons";
+import { ThemeToggle } from "./ThemeToggle";
 
 export function AuthLayout({ children }: { children: ReactNode }) {
   return (
@@ -11,7 +12,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
           CoCoder
         </Link>
         <div className="relative z-10 mt-auto max-w-[520px] pb-10">
-          <span className="mb-4 inline-flex rounded-full border border-dark-line bg-white/5 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.09em] text-ondark-dim">
+          <span className="mb-4 inline-flex rounded-full border border-dark-line bg-ondark/5 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.09em] text-ondark-dim">
             Autonomous coding agents
           </span>
           <h1 className="max-w-[13ch] text-[42px] font-bold leading-[1.08] tracking-tight">
@@ -25,9 +26,14 @@ export function AuthLayout({ children }: { children: ReactNode }) {
         <div className="absolute bottom-12 right-20 size-44 rounded-full border border-dark-line opacity-40" />
       </section>
       <section className="flex min-h-screen flex-col px-5 py-7 sm:px-10 lg:px-16">
-        <div className="flex items-center gap-2.5 text-[16px] font-bold tracking-tight lg:hidden">
-          <BoltIcon className="text-accent" size={22} strokeWidth={2} />
-          CoCoder
+        <div className="flex items-center gap-2.5 text-[16px] font-bold tracking-tight">
+          <span className="flex items-center gap-2.5 lg:hidden">
+            <BoltIcon className="text-accent" size={22} strokeWidth={2} />
+            CoCoder
+          </span>
+          <div className="ml-auto">
+            <ThemeToggle />
+          </div>
         </div>
         <div className="m-auto w-full max-w-[410px] py-10">{children}</div>
       </section>
