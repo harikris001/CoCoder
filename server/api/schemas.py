@@ -99,6 +99,7 @@ class RunOut(BaseModel):
     pm_output: Optional[dict[str, Any]] = None
     architecture_output: Optional[dict[str, Any]] = None
     planner_output: Optional[dict[str, Any]] = None
+    test_output: Optional[dict[str, Any]] = None
     review_output: Optional[dict[str, Any]] = None
     files_touched: Optional[list[str]] = None
     completed_task_ids: Optional[list[str]] = None

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite+aiosqlite:///{DATA_ROOT / 'cocoder.db'}"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     max_review_retries: int = 3
+    agent_recursion_limit: int = 50
     embedding_model: str = "openai/text-embedding-3-small"
     llm_model: str = "deepseek/deepseek-v4-flash-0731"
     auth_session_days: int = 30

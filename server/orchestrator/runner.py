@@ -67,6 +67,8 @@ def _state_from_run(run: Run) -> PipelineState:
         state["architecture"] = run.architecture_output
     if run.planner_output:
         state["planner"] = run.planner_output
+    if run.test_output:
+        state["test"] = run.test_output
     if run.review_output:
         state["review"] = run.review_output
     if run.checkpoint_stage:

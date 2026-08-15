@@ -20,6 +20,7 @@ _RUN_COLUMN_MIGRATIONS: list[tuple[str, str]] = [
     ("attempt_started_at", "DATETIME"),
     ("issue_labels", "JSON"),
     ("gitops_output", "JSON"),
+    ("test_output", "JSON"),
 ]
 
 _REPO_COLUMN_MIGRATIONS: list[tuple[str, str]] = [

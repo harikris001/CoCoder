@@ -4,7 +4,7 @@ from abc import ABC
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import ToolErrorMiddleware
+from langchain.agents.middleware import ToolCallLimitMiddleware, ToolErrorMiddleware
 from langchain.agents.middleware.types import ToolCallRequest
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -82,6 +82,12 @@ class BaseAgent(ABC):
         if self.tools:
             system_prompt += _TOOL_ERROR_HINT
             middleware.append(ToolErrorMiddleware(on_error=_on_tool_error))
+            middleware.append(
+                ToolCallLimitMiddleware(
+                    run_limit=15,
+                    exit_behavior="continue",
+                )
+            )
         self.agent = create_agent(
             name=self.name,
             model=self.get_llm(),

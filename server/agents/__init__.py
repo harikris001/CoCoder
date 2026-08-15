@@ -8,6 +8,7 @@ from agents.github_ops_agent import GitHubOpsAgent
 from agents.pm_agent import PMAgent
 from agents.reviewer_agent import ReviewerAgent
 from agents.task_planner_agent import TaskPlannerAgent
+from agents.tester_agent import TesterAgent
 
 __all__ = [
     "ArchitectureAgent",
@@ -18,4 +19,5 @@ __all__ = [
     "PMAgent",
     "ReviewerAgent",
     "TaskPlannerAgent",
+    "TesterAgent",
 ]

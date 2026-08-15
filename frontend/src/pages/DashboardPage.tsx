@@ -38,6 +38,7 @@ const PIPELINE = [
   "architecture",
   "planner",
   "develop",
+  "test",
   "review",
   "awaiting_push",
   "gitops",
@@ -108,7 +109,7 @@ function eventKind(stage: string, message: string): FeedKind {
   const m = message.toLowerCase();
   if (s === "failed" || s === "needs_human" || m.includes("fail")) return "err";
   if (s === "done" || m.includes("pr opened") || m.includes("complete")) return "ok";
-  if (["pm", "architecture", "planner", "develop", "review", "branch", "gitops"].includes(s)) return "act";
+  if (["pm", "architecture", "planner", "develop", "test", "review", "branch", "gitops"].includes(s)) return "act";
   return "plain";
 }
 

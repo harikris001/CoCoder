@@ -1,60 +1,5 @@
 import type { ReactNode } from "react";
-
-type AgentKey = "pm" | "architecture" | "planner" | "develop" | "review";
-
-export const AGENT_META: Record<
-  string,
-  { key: AgentKey | string; agent: string; title: string; outputField?: keyof AgentOutputs }
-> = {
-  clone: { key: "clone", agent: "GitHub Ops", title: "Clone repo" },
-  branch: {
-    key: "branch",
-    agent: "GitHub Ops",
-    title: "Classify issue and branch",
-    outputField: "gitops_output",
-  },
-  index: { key: "index", agent: "Indexer", title: "Index codebase" },
-  pm: { key: "pm", agent: "PM Agent", title: "Analyze issue", outputField: "pm_output" },
-  architecture: {
-    key: "architecture",
-    agent: "Architecture Agent",
-    title: "Map changes",
-    outputField: "architecture_output",
-  },
-  planner: {
-    key: "planner",
-    agent: "Task Planner",
-    title: "Plan tasks",
-    outputField: "planner_output",
-  },
-  develop: { key: "develop", agent: "Developer Agent", title: "Implement fix" },
-  review: {
-    key: "review",
-    agent: "Reviewer Agent",
-    title: "Review changes",
-    outputField: "review_output",
-  },
-  gitops: { key: "gitops", agent: "GitHub Ops", title: "Open pull request" },
-  awaiting_push: { key: "awaiting_push", agent: "You", title: "Review before push" },
-  discarded: { key: "discarded", agent: "You", title: "Discarded" },
-  checkpoint: { key: "checkpoint", agent: "Orchestrator", title: "Checkpoint" },
-  queued: { key: "queued", agent: "Orchestrator", title: "Queued" },
-  done: { key: "done", agent: "Orchestrator", title: "Complete" },
-  failed: { key: "failed", agent: "Orchestrator", title: "Failed" },
-  needs_human: { key: "needs_human", agent: "Orchestrator", title: "Needs review" },
-};
-
-export type AgentOutputs = {
-  gitops_output?: Record<string, unknown> | null;
-  pm_output?: Record<string, unknown> | null;
-  architecture_output?: Record<string, unknown> | null;
-  planner_output?: Record<string, unknown> | null;
-  review_output?: Record<string, unknown> | null;
-};
-
-export function agentNameForStage(stage: string): string {
-  return AGENT_META[stage]?.agent || stage;
-}
+import { AGENT_META } from "./agentMeta";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -226,6 +171,61 @@ function PlannerView({ data }: { data: Record<string, unknown> }) {
   );
 }
 
+function TestView({ data }: { data: Record<string, unknown> }) {
+  const passed = data.passed === true;
+  const command = Array.isArray(data.command)
+    ? data.command.map(String).join(" ")
+    : typeof data.command === "string"
+      ? data.command
+      : "";
+  const removed = asStringList(data.artifacts_removed);
+  const created = asStringList(data.files_created);
+  return (
+    <>
+      <Section title="Verdict">
+        <span
+          className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+            passed
+              ? "bg-accent-soft text-accent-ink"
+              : "bg-danger-soft text-danger-ink"
+          }`}
+        >
+          {passed ? "Passed" : "Failed"}
+        </span>
+      </Section>
+      {command && (
+        <Section title="Command">
+          <p className="font-mono text-[13px] text-ink">{command}</p>
+        </Section>
+      )}
+      {data.exit_code != null && (
+        <Section title="Exit code">
+          <p className="font-mono text-[13px] text-ink">{String(data.exit_code)}</p>
+        </Section>
+      )}
+      {typeof data.summary === "string" && (
+        <Section title="Summary">
+          <p className="text-[14px] leading-[1.6] text-ink">{data.summary}</p>
+        </Section>
+      )}
+      <Section title="Failing tests">
+        <BulletList items={asStringList(data.failing_tests)} />
+      </Section>
+      <Section title="Bugs">
+        <BulletList items={asStringList(data.bugs)} />
+      </Section>
+      <Section title="Temporary files (removed)">
+        <BulletList items={removed.length ? removed : created} />
+      </Section>
+      {typeof data.notes === "string" && data.notes.trim() && (
+        <Section title="Notes">
+          <p className="text-[13px] leading-[1.55] text-muted">{data.notes}</p>
+        </Section>
+      )}
+    </>
+  );
+}
+
 function ReviewView({ data }: { data: Record<string, unknown> }) {
   const approved = data.approved === true;
   return (
@@ -290,6 +290,8 @@ export function AgentOutputView({
       return <ArchitectureView data={obj} />;
     case "planner":
       return <PlannerView data={obj} />;
+    case "test":
+      return <TestView data={obj} />;
     case "review":
       return <ReviewView data={obj} />;
     default:

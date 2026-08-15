@@ -16,18 +16,16 @@ class TaskPlannerAgent(BaseAgent):
         "## Output\n\n"
         "- Ordered task list, each tagged with its owning agent (backend|frontend|testing|docs)\n"
         "- target_files: the exact repo-relative paths that task may create or edit\n"
-        "- Any cross-task dependencies\n\n"
-        "## Parallelism (required)\n\n"
-        "Independent backend and frontend work MUST be separate tasks with empty depends_on\n"
-        "(or only depending on already-finished work) so they can run at the same time.\n"
-        "target_files for concurrent tasks MUST be disjoint — never assign the same path to\n"
-        "two parallel tasks. If two tasks must touch one file, put a depends_on edge between them.\n\n"
+        "- Any cross-task dependencies (depends_on) so later tasks wait for earlier ones\n\n"
+        "## Ordering\n\n"
+        "Tasks run one at a time, in this list order, after their depends_on tasks finish.\n"
+        "Put foundational work first. Do not assume two developers run at the same time.\n\n"
         "## Never\n\n"
         "- Write or modify code\n"
         "- Skip ahead and make implementation decisions that belong to Backend/Frontend agents\n\n"
         "## Handoff\n\n"
         "Dispatches tasks to the Backend Developer Agent and/or Frontend Developer Agent "
-        "as applicable, in parallel where tasks are independent."
+        "as applicable, one task at a time."
     )
 
     response_format = TaskPlannerResponse
