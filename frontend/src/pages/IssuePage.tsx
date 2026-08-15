@@ -24,6 +24,7 @@ import { AWAITING, DISCARDED, DONE, FAILED, LIVE } from "../utils/format";
 
 const PIPELINE = [
   "clone",
+  "branch",
   "index",
   "pm",
   "architecture",
@@ -104,7 +105,7 @@ function pipelineState(stage: string, status: string) {
     if (doneAll) state = "done";
     else if (failed && stepIdx <= current) state = stepIdx === current ? "error" : "done";
     else if (stepIdx < current) state = "done";
-    else if (stepIdx === current || (stage === "branch" && key === "clone")) state = "active";
+    else if (stepIdx === current) state = "active";
     else if (stage === "queued" && i === 0) state = "active";
     return {
       key,

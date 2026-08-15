@@ -91,7 +91,9 @@ export type PullRequest = {
 export type RunDetail = RunSummary & {
   issue_body?: string | null;
   issue_url?: string | null;
+  issue_labels?: string[] | null;
   error?: string | null;
+  gitops_output?: Record<string, unknown> | null;
   pm_output?: Record<string, unknown> | null;
   architecture_output?: Record<string, unknown> | null;
   planner_output?: Record<string, unknown> | null;

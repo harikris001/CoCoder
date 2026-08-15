@@ -21,7 +21,8 @@ RunPhase = Literal["full", "gitops"]
 def _state_from_run(run: Run) -> PipelineState:
     repo = run.repo
     resume = bool(
-        run.pm_output
+        run.gitops_output
+        or run.pm_output
         or run.architecture_output
         or run.planner_output
         or run.completed_task_ids
@@ -32,6 +33,7 @@ def _state_from_run(run: Run) -> PipelineState:
         "issue_title": run.issue_title,
         "issue_body": run.issue_body or "",
         "issue_number": run.issue_number,
+        "issue_labels": list(run.issue_labels or []),
         "repo_full_name": repo.full_name,
         "owner": repo.owner,
         "name": repo.name,
@@ -47,6 +49,8 @@ def _state_from_run(run: Run) -> PipelineState:
         "completed_task_ids": list(run.completed_task_ids or []),
         "files_touched": list(run.files_touched or []),
     }
+    if run.gitops_output:
+        state["gitops"] = run.gitops_output
     if run.pm_output:
         state["pm"] = run.pm_output
     if run.architecture_output:

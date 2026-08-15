@@ -6,8 +6,13 @@ export const AGENT_META: Record<
   string,
   { key: AgentKey | string; agent: string; title: string; outputField?: keyof AgentOutputs }
 > = {
-  clone: { key: "clone", agent: "GitOps", title: "Clone repo" },
-  branch: { key: "branch", agent: "GitOps", title: "Create branch" },
+  clone: { key: "clone", agent: "GitHub Ops", title: "Clone repo" },
+  branch: {
+    key: "branch",
+    agent: "GitHub Ops",
+    title: "Classify issue and branch",
+    outputField: "gitops_output",
+  },
   index: { key: "index", agent: "Indexer", title: "Index codebase" },
   pm: { key: "pm", agent: "PM Agent", title: "Analyze issue", outputField: "pm_output" },
   architecture: {
@@ -29,7 +34,7 @@ export const AGENT_META: Record<
     title: "Review changes",
     outputField: "review_output",
   },
-  gitops: { key: "gitops", agent: "GitOps", title: "Open pull request" },
+  gitops: { key: "gitops", agent: "GitHub Ops", title: "Open pull request" },
   awaiting_push: { key: "awaiting_push", agent: "You", title: "Review before push" },
   discarded: { key: "discarded", agent: "You", title: "Discarded" },
   checkpoint: { key: "checkpoint", agent: "Orchestrator", title: "Checkpoint" },
@@ -40,6 +45,7 @@ export const AGENT_META: Record<
 };
 
 export type AgentOutputs = {
+  gitops_output?: Record<string, unknown> | null;
   pm_output?: Record<string, unknown> | null;
   architecture_output?: Record<string, unknown> | null;
   planner_output?: Record<string, unknown> | null;
@@ -81,6 +87,38 @@ function BulletList({ items }: { items: string[] }) {
 function asStringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((v) => (typeof v === "string" ? v : JSON.stringify(v)));
+}
+
+function GitOpsView({ data }: { data: Record<string, unknown> }) {
+  return (
+    <>
+      {typeof data.issue_type === "string" && (
+        <Section title="Issue type">
+          <p className="font-mono text-[13px] text-ink">{data.issue_type}</p>
+        </Section>
+      )}
+      {typeof data.branch_name === "string" && (
+        <Section title="Branch">
+          <p className="font-mono text-[13px] text-ink">{data.branch_name}</p>
+        </Section>
+      )}
+      {typeof data.pr_title === "string" && (
+        <Section title="PR title">
+          <p className="text-[14px] leading-[1.6] text-ink">{data.pr_title}</p>
+        </Section>
+      )}
+      {typeof data.closes_keyword === "string" && (
+        <Section title="Closes with">
+          <p className="font-mono text-[13px] text-ink">{data.closes_keyword}</p>
+        </Section>
+      )}
+      {typeof data.rationale === "string" && (
+        <Section title="Rationale">
+          <p className="text-[14px] leading-[1.6] text-ink">{data.rationale}</p>
+        </Section>
+      )}
+    </>
+  );
 }
 
 function PmView({ data }: { data: Record<string, unknown> }) {
@@ -239,6 +277,8 @@ export function AgentOutputView({
   if (!obj) return <GenericView data={data} />;
 
   switch (stage) {
+    case "branch":
+      return <GitOpsView data={obj} />;
     case "pm":
       return <PmView data={obj} />;
     case "architecture":

@@ -170,6 +170,7 @@ async def sync_open_issues(
             issue_title=issue.get("title") or f"Issue #{number}",
             issue_body=issue.get("body"),
             issue_url=issue.get("html_url"),
+            issue_labels=issue.get("labels") or [],
         )
         created.append({"issue_number": number, "run_id": run.id, "title": run.issue_title})
 
@@ -225,6 +226,7 @@ async def run_specific_issue(
         run.issue_title = issue.get("title") or run.issue_title
         run.issue_body = issue.get("body")
         run.issue_url = issue.get("html_url")
+        run.issue_labels = issue.get("labels") or []
         run_id = run.id
     else:
         run = await create_run(
@@ -234,6 +236,7 @@ async def run_specific_issue(
             issue_title=issue.get("title") or f"Issue #{issue_number}",
             issue_body=issue.get("body"),
             issue_url=issue.get("html_url"),
+            issue_labels=issue.get("labels") or [],
         )
         run_id = run.id
 

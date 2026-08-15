@@ -13,6 +13,7 @@ from agents import (
     ArchitectureAgent,
     BackendAgent,
     FrontendAgent,
+    GitHubOpsAgent,
     PMAgent,
     ReviewerAgent,
     TaskPlannerAgent,
@@ -29,11 +30,12 @@ from tools.agent_tools import configure_tools
 from tools.github.git_ops import (
     changed_files,
     commit_all,
-    ensure_bugfix_branch,
+    ensure_issue_branch,
     ensure_repo,
     get_diff,
     push_branch,
 )
+from tools.github.issue_type import fallback_github_ops, sanitize_github_ops
 from tools.github.pull_requests import build_pr_body, create_pull_request
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,7 @@ class PipelineState(TypedDict, total=False):
     issue_title: str
     issue_body: str
     issue_number: int
+    issue_labels: list[str]
     repo_full_name: str
     owner: str
     name: str
@@ -53,6 +56,7 @@ class PipelineState(TypedDict, total=False):
     repo_db_id: int
     user_id: int | None
     context: str
+    gitops: dict[str, Any]
     pm: dict[str, Any]
     architecture: dict[str, Any]
     planner: dict[str, Any]
@@ -253,18 +257,30 @@ async def finish_gitops(
 
     await _event(run_id, "gitops", "Committing and opening PR")
     repo = ensure_repo(state["clone_url"], workspace, github_token)
-    branch = state.get("branch_name") or ensure_bugfix_branch(
+    gitops = state.get("gitops") or {}
+    branch = gitops.get("branch_name") or state.get("branch_name")
+    if not branch:
+        gitops = fallback_github_ops(
+            issue_number=state["issue_number"],
+            title=state["issue_title"],
+            body=state.get("issue_body") or "",
+            labels=state.get("issue_labels") or [],
+        )
+        branch = gitops["branch_name"]
+        state["gitops"] = gitops
+    ensure_issue_branch(
         repo,
-        state["issue_number"],
+        branch,
         state.get("default_branch") or "main",
         github_token,
     )
     state["branch_name"] = branch
 
     summary = (state.get("pm") or {}).get("goal") or state["issue_title"]
+    commit_prefix = gitops.get("commit_prefix") or "fix"
     committed = commit_all(
         repo,
-        f"fix: {state['issue_title']} (#{state['issue_number']})\n\nCoCoder automated fix.",
+        f"{commit_prefix}: {state['issue_title']} (#{state['issue_number']})\n\nCoCoder automated change.",
     )
     if committed:
         push_branch(repo, branch, github_token)
@@ -275,8 +291,14 @@ async def finish_gitops(
             logger.warning("Push skipped/failed: %s", exc)
 
     files = changed_files(repo, state.get("default_branch") or "main") or files_touched
-    title = f"Fix: {state['issue_title']}"
-    body = build_pr_body(state["issue_number"], summary, files)
+    title = gitops.get("pr_title") or f"Fix: {state['issue_title']}"
+    closes_keyword = gitops.get("closes_keyword") or "Fixes"
+    body = build_pr_body(
+        state["issue_number"],
+        summary,
+        files,
+        closes_keyword=str(closes_keyword),
+    )
     pr = create_pull_request(
         state["owner"],
         state["name"],
@@ -357,15 +379,53 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
         repo = ensure_repo(state["clone_url"], workspace, github_token)
 
         await _update_run(run_id, stage="branch")
-        branch = ensure_bugfix_branch(
+        gitops = state.get("gitops")
+        if gitops:
+            await _event(run_id, "checkpoint", "Skipped GitHub Ops (cached output)")
+            state["gitops"] = gitops
+        else:
+            await _event(run_id, "branch", "GitHub Ops Agent classifying issue")
+            labels = list(state.get("issue_labels") or [])
+            label_text = ", ".join(labels) if labels else "(none)"
+            try:
+                gitops_agent = GitHubOpsAgent(user_id=state.get("user_id"))
+                raw_gitops = await _invoke_agent(
+                    gitops_agent,
+                    (
+                        f"Issue number: {state['issue_number']}\n"
+                        f"Title: {state['issue_title']}\n"
+                        f"Labels: {label_text}\n\n"
+                        f"Description:\n{state.get('issue_body') or '(empty)'}"
+                    ),
+                )
+                gitops = sanitize_github_ops(
+                    raw_gitops,
+                    issue_number=state["issue_number"],
+                    title=state["issue_title"],
+                    body=state.get("issue_body") or "",
+                    labels=labels,
+                )
+            except Exception as exc:  # noqa: BLE001 — keep the run moving
+                logger.warning("GitHub Ops agent failed, using fallback: %s", exc)
+                gitops = fallback_github_ops(
+                    issue_number=state["issue_number"],
+                    title=state["issue_title"],
+                    body=state.get("issue_body") or "",
+                    labels=labels,
+                )
+            state["gitops"] = gitops
+            await _update_run(run_id, gitops_output=gitops)
+
+        branch = gitops["branch_name"]
+        ensure_issue_branch(
             repo,
-            state["issue_number"],
+            branch,
             state.get("default_branch") or "main",
             github_token,
         )
         state["branch_name"] = branch
         await _update_run(run_id, branch_name=branch)
-        await _event(run_id, "branch", f"Using branch {branch}")
+        await _event(run_id, "branch", f"Using branch {branch}", payload=gitops)
 
         await _update_run(run_id, stage="index")
         indexer = HybridIndexer(state["repo_db_id"], workspace)

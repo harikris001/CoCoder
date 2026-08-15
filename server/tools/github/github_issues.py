@@ -8,6 +8,7 @@ import httpx
 from langchain.tools import tool
 from config import get_settings
 from tools.github.client import GITHUB_API, github_headers
+from tools.github.issue_type import normalize_labels
 
 
 def fetch_issues(
@@ -50,7 +51,7 @@ def _normalize_issue(issue: dict[str, Any]) -> dict[str, Any]:
         "number": issue.get("number"),
         "title": issue.get("title"),
         "state": issue.get("state"),
-        "labels": [lbl.get("name") if isinstance(lbl, dict) else lbl for lbl in (issue.get("labels") or [])],
+        "labels": normalize_labels(issue.get("labels")),
         "body": issue.get("body"),
         "reported_by": (issue.get("user") or {}).get("login"),
         "html_url": issue.get("html_url"),

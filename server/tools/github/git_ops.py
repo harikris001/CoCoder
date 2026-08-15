@@ -1,4 +1,4 @@
-"""Git branch / commit / push operations for bugfix branches."""
+"""Git branch / commit / push operations for issue branches."""
 
 from __future__ import annotations
 
@@ -73,13 +73,12 @@ def _clean_url(url: str) -> str:
     return url
 
 
-def ensure_bugfix_branch(
+def ensure_issue_branch(
     repo: Repo,
-    issue_number: int,
+    branch_name: str,
     default_branch: str = "main",
     token: Optional[str] = None,
 ) -> str:
-    branch_name = f"bugfix/{issue_number}"
     # Refresh remote refs
     origin_url = repo.remotes.origin.url
     try:
