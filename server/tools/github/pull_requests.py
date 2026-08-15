@@ -47,11 +47,18 @@ def create_pull_request(
         return response.json()
 
 
-def build_pr_body(issue_number: int, summary: str, files: list[str]) -> str:
+def build_pr_body(
+    issue_number: int,
+    summary: str,
+    files: list[str],
+    *,
+    closes_keyword: str = "Fixes",
+) -> str:
     file_list = "\n".join(f"- `{f}`" for f in files) or "- (no files listed)"
+    keyword = closes_keyword.strip() or "Fixes"
     return (
         f"## Summary\n\n{summary}\n\n"
         f"## Files changed\n\n{file_list}\n\n"
-        f"Fixes #{issue_number}\n\n"
+        f"{keyword} #{issue_number}\n\n"
         f"_Opened automatically by CoCoder._\n"
     )

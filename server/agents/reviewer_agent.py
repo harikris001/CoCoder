@@ -2,7 +2,6 @@
 
 from agents.base_agent import BaseAgent
 from models.review_output import ReviewResponse
-from tools.agent_tools import READ_TOOLS
 
 
 class ReviewerAgent(BaseAgent):
@@ -22,9 +21,11 @@ class ReviewerAgent(BaseAgent):
         "- summary\n"
         "- blocking issues (if any)\n\n"
         "## Never\n\n"
+        "- Call tools. The diff and file list are already in the user message.\n"
         "- Modify files yourself\n"
         "- Open pull requests\n"
+        "Finish immediately with the structured review output.\n"
     )
 
     response_format = ReviewResponse
-    tools = READ_TOOLS
+    tools = []

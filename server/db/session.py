@@ -18,6 +18,8 @@ _RUN_COLUMN_MIGRATIONS: list[tuple[str, str]] = [
     ("checkpoint_stage", "VARCHAR(64)"),
     ("execution_seconds", "INTEGER DEFAULT 0"),
     ("attempt_started_at", "DATETIME"),
+    ("issue_labels", "JSON"),
+    ("gitops_output", "JSON"),
 ]
 
 _REPO_COLUMN_MIGRATIONS: list[tuple[str, str]] = [

@@ -15,6 +15,7 @@ from api.services import create_run, get_or_create_repo
 from config import WORKSPACE_ROOT, get_settings
 from db.models import WebhookDelivery
 from db.session import async_session_factory
+from tools.github.issue_type import normalize_labels
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -91,9 +92,9 @@ async def github_webhook(
     if x_github_event == "issues" and action in {"opened", "reopened"}:
         run_id = await _enqueue_issue_run(payload)
         if run_id is not None:
-            from orchestrator.runner import execute_run
+            from orchestrator.runner import schedule_execute_run
 
-            background_tasks.add_task(execute_run, run_id)
+            schedule_execute_run(run_id)
         return {"status": "accepted", "run_id": run_id}
 
     return {"status": "ignored", "event": x_github_event, "action": action}
@@ -132,6 +133,7 @@ async def _enqueue_issue_run(payload: dict[str, Any]) -> int | None:
             issue_title=issue.get("title") or f"Issue #{issue.get('number')}",
             issue_body=issue.get("body"),
             issue_url=issue.get("html_url"),
+            issue_labels=normalize_labels(issue.get("labels")),
         )
         await session.commit()
         return run.id

@@ -14,6 +14,7 @@ from db.models import PullRequest, Repo, Run, RunEvent
 
 
 def branch_for_issue(issue_number: int) -> str:
+    """Placeholder until GitHub Ops names the typed branch."""
     return f"bugfix/{issue_number}"
 
 
@@ -62,6 +63,7 @@ async def create_run(
     issue_title: str,
     issue_body: Optional[str],
     issue_url: Optional[str],
+    issue_labels: Optional[list[str]] = None,
 ) -> Run:
     run = Run(
         repo_id=repo.id,
@@ -69,6 +71,7 @@ async def create_run(
         issue_title=issue_title,
         issue_body=issue_body,
         issue_url=issue_url,
+        issue_labels=issue_labels,
         branch_name=branch_for_issue(issue_number),
         status="queued",
         stage="queued",

@@ -90,10 +90,12 @@ class RunOut(BaseModel):
     issue_title: str
     issue_body: Optional[str] = None
     issue_url: Optional[str] = None
+    issue_labels: Optional[list[str]] = None
     branch_name: str
     status: str
     stage: str
     error: Optional[str] = None
+    gitops_output: Optional[dict[str, Any]] = None
     pm_output: Optional[dict[str, Any]] = None
     architecture_output: Optional[dict[str, Any]] = None
     planner_output: Optional[dict[str, Any]] = None

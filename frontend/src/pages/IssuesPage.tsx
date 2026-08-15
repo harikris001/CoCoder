@@ -81,6 +81,13 @@ export function IssuesPage() {
     };
   }, [load]);
 
+  const hasLive = runs.some((r) => LIVE.has(r.status));
+  useEffect(() => {
+    if (!hasLive) return;
+    const id = window.setInterval(() => void load().catch(() => {}), 3000);
+    return () => window.clearInterval(id);
+  }, [hasLive, load]);
+
   const counts = useMemo(() => {
     const live = runs.filter((r) => LIVE.has(r.status)).length;
     const failed = runs.filter((r) => FAILED.has(r.status)).length;

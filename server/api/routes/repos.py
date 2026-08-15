@@ -134,7 +134,7 @@ async def sync_open_issues(
     Use this for local development where GitHub cannot reach localhost webhooks.
     """
     from api.services import create_run
-    from orchestrator.runner import execute_run
+    from orchestrator.runner import schedule_execute_run
     from tools.github.github_issues import fetch_issues
 
     result = await db.execute(select(Repo).where(Repo.id == repo_id, Repo.user_id == user.id))
@@ -170,12 +170,13 @@ async def sync_open_issues(
             issue_title=issue.get("title") or f"Issue #{number}",
             issue_body=issue.get("body"),
             issue_url=issue.get("html_url"),
+            issue_labels=issue.get("labels") or [],
         )
         created.append({"issue_number": number, "run_id": run.id, "title": run.issue_title})
 
     await db.commit()
     for item in created:
-        background_tasks.add_task(execute_run, item["run_id"])
+        schedule_execute_run(item["run_id"])
 
     return {
         "status": "ok",
@@ -196,7 +197,7 @@ async def run_specific_issue(
 ) -> dict:
     """Fetch one GitHub issue and enqueue (or re-use) a CoCoder run."""
     from api.services import create_run
-    from orchestrator.runner import execute_run
+    from orchestrator.runner import schedule_execute_run
     from tools.github.github_issues import fetch_issue
 
     result = await db.execute(select(Repo).where(Repo.id == repo_id, Repo.user_id == user.id))
@@ -225,6 +226,7 @@ async def run_specific_issue(
         run.issue_title = issue.get("title") or run.issue_title
         run.issue_body = issue.get("body")
         run.issue_url = issue.get("html_url")
+        run.issue_labels = issue.get("labels") or []
         run_id = run.id
     else:
         run = await create_run(
@@ -234,11 +236,12 @@ async def run_specific_issue(
             issue_title=issue.get("title") or f"Issue #{issue_number}",
             issue_body=issue.get("body"),
             issue_url=issue.get("html_url"),
+            issue_labels=issue.get("labels") or [],
         )
         run_id = run.id
 
     await db.commit()
-    background_tasks.add_task(execute_run, run_id)
+    schedule_execute_run(run_id)
     return {"status": "queued", "run_id": run_id, "issue_number": issue_number}
 
 
