@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from git import Repo as GitRepo
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,6 +23,10 @@ from db.session import async_session_factory, get_db
 from tools.github.git_ops import get_diff
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+
+class RequestChangesBody(BaseModel):
+    comment: str | None = Field(default=None, max_length=4000)
 
 
 def _to_summary(run: Run) -> RunSummaryOut:
@@ -143,6 +149,15 @@ async def retry_run(
     run = await load_run(db, run_id, user.id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
+    if run.status == "awaiting_push":
+        raise HTTPException(
+            status_code=409,
+            detail="Approve, request changes, or discard this run instead of retrying",
+        )
+    if run.status == "discarded":
+        raise HTTPException(status_code=409, detail="Discarded runs cannot be retried")
+    if run.status in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="Run is already in progress")
 
     resume_stage = _next_resume_stage(run)
     run.status = "queued"
@@ -169,6 +184,97 @@ async def retry_run(
 
     background_tasks.add_task(execute_run, run_id)
     return {"status": "queued", "run_id": run_id, "resume_stage": resume_stage}
+
+
+@router.post("/{run_id}/approve")
+async def approve_run(
+    run_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    run = await load_run(db, run_id, user.id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status != "awaiting_push":
+        raise HTTPException(status_code=409, detail="Run is not waiting for push approval")
+
+    run.status = "running"
+    run.stage = "gitops"
+    run.error = None
+    run.finished_at = None
+    await append_run_event(db, run, stage="gitops", message="Human approved push and PR")
+    await db.commit()
+
+    from orchestrator.runner import execute_run
+
+    background_tasks.add_task(execute_run, run_id, "gitops")
+    return {"status": "queued", "run_id": run_id, "phase": "gitops"}
+
+
+@router.post("/{run_id}/request-changes")
+async def request_run_changes(
+    run_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    body: RequestChangesBody = RequestChangesBody(),
+) -> dict:
+    run = await load_run(db, run_id, user.id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status != "awaiting_push":
+        raise HTTPException(status_code=409, detail="Run is not waiting for push approval")
+
+    comment = (body.comment or "").strip()
+    review = dict(run.review_output or {})
+    review["approved"] = False
+    if comment:
+        review["human_feedback"] = comment
+
+    run.status = "queued"
+    run.stage = "queued"
+    run.error = None
+    run.finished_at = None
+    run.attempt_started_at = None
+    run.completed_task_ids = []
+    run.review_output = review
+    run.checkpoint_stage = "planner"
+    run.retry_count = (run.retry_count or 0) + 1
+    await append_run_event(
+        db,
+        run,
+        stage="queued",
+        message="Human requested changes — resuming develop",
+        payload={"comment": comment or None},
+    )
+    await db.commit()
+
+    from orchestrator.runner import execute_run
+
+    background_tasks.add_task(execute_run, run_id)
+    return {"status": "queued", "run_id": run_id, "resume_stage": "develop"}
+
+
+@router.post("/{run_id}/discard")
+async def discard_run(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    run = await load_run(db, run_id, user.id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status != "awaiting_push":
+        raise HTTPException(status_code=409, detail="Run is not waiting for push approval")
+
+    run.status = "discarded"
+    run.stage = "discarded"
+    run.finished_at = datetime.now(timezone.utc)
+    run.attempt_started_at = None
+    await append_run_event(db, run, stage="discarded", message="Human discarded this run — no push")
+    await db.commit()
+    return {"status": "discarded", "run_id": run_id}
 
 
 @router.websocket("/{run_id}/events")

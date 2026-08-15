@@ -6,6 +6,8 @@
 export const LIVE = new Set(["queued", "running"]);
 export const DONE = new Set(["completed", "done"]);
 export const FAILED = new Set(["failed", "error", "needs_human"]);
+export const AWAITING = new Set(["awaiting_push"]);
+export const DISCARDED = new Set(["discarded"]);
 
 /* ─── Time formatting ─── */
 

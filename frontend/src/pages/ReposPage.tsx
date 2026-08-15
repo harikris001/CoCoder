@@ -93,6 +93,12 @@ function deriveRow(repo: ApiRepo, runs: RunSummary[]): RepoRow {
   } else if (latest?.status === "queued") {
     status = "queued";
     statusText = "queued";
+  } else if (latest?.status === "awaiting_push") {
+    status = "queued";
+    statusText = "awaiting push";
+  } else if (latest?.status === "discarded") {
+    status = "off";
+    statusText = "discarded";
   } else if (latest?.status === "failed" || latest?.status === "error") {
     status = "attention";
     statusText = "failed · retry";

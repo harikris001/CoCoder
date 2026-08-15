@@ -21,6 +21,8 @@ import {
   LIVE,
   DONE,
   FAILED,
+  AWAITING,
+  DISCARDED,
   formatRelative,
   formatClock,
   formatDuration,
@@ -37,6 +39,7 @@ const PIPELINE = [
   "planner",
   "develop",
   "review",
+  "awaiting_push",
   "gitops",
   "done",
 ] as const;
@@ -73,14 +76,18 @@ function stageProgress(stage: string): { now: number; total: number; pct: number
   return { now, total, pct: Math.round((now / total) * 100) };
 }
 
-function runUiStatus(status: string): "running" | "ok" | "err" {
+function runUiStatus(status: string): "running" | "ok" | "err" | "awaiting" | "off" {
   if (LIVE.has(status)) return "running";
+  if (AWAITING.has(status)) return "awaiting";
+  if (DISCARDED.has(status)) return "off";
   if (FAILED.has(status)) return "err";
   return "ok";
 }
 
 function runStatusText(run: RunSummary): string {
   if (LIVE.has(run.status)) return run.status === "queued" ? "queued" : `running · ${run.stage}`;
+  if (AWAITING.has(run.status)) return "awaiting push";
+  if (DISCARDED.has(run.status)) return "discarded";
   if (FAILED.has(run.status)) return run.status === "needs_human" ? "needs review" : "failed · retry";
   if (run.pr_url) {
     const m = run.pr_url.match(/\/pull\/(\d+)/);
@@ -126,13 +133,14 @@ function buildFeedSorted(details: RunDetail[]): FeedItem[] {
   return items.slice(0, 12).map(({ at: _at, ...rest }) => rest);
 }
 
-type StatusFilter = "all" | "running" | "failed" | "needs_human" | "completed";
+type StatusFilter = "all" | "running" | "failed" | "needs_human" | "awaiting_push" | "completed";
 
 function matchesStatusFilter(run: RunSummary, filter: StatusFilter): boolean {
   if (filter === "all") return true;
   if (filter === "running") return LIVE.has(run.status);
   if (filter === "failed") return run.status === "failed" || run.status === "error";
-  if (filter === "needs_human") return run.status === "needs_human";
+  if (filter === "needs_human") return run.status === "needs_human" || AWAITING.has(run.status);
+  if (filter === "awaiting_push") return AWAITING.has(run.status);
   if (filter === "completed") return DONE.has(run.status);
   return true;
 }
@@ -537,6 +545,7 @@ export function DashboardPage() {
                     <option value="running">Running</option>
                     <option value="failed">Failed</option>
                     <option value="needs_human">Needs review</option>
+                    <option value="awaiting_push">Awaiting push</option>
                     <option value="completed">Completed</option>
                   </select>
                 </label>
@@ -634,7 +643,11 @@ export function DashboardPage() {
                                     ? "pill-running"
                                     : ui === "ok"
                                       ? "pill-ok"
-                                      : "pill-err"
+                                      : ui === "awaiting"
+                                        ? "pill-queued"
+                                        : ui === "off"
+                                          ? "pill-off"
+                                          : "pill-err"
                                 }`}
                               >
                                 {runStatusText(r)}

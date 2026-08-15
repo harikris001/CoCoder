@@ -114,6 +114,10 @@ export type DiffOut = {
   files: string[];
 };
 
+export type UserPreferences = {
+  require_push_approval: boolean;
+};
+
 export type LlmProviderId =
   | "openai"
   | "anthropic"
@@ -257,6 +261,26 @@ export const api = {
   retryRun: (id: number) =>
     request<{ status: string; run_id: number; resume_stage?: string }>(`/runs/${id}/retry`, {
       method: "POST",
+    }),
+  approveRun: (id: number) =>
+    request<{ status: string; run_id: number; phase?: string }>(`/runs/${id}/approve`, {
+      method: "POST",
+    }),
+  requestRunChanges: (id: number, comment?: string) =>
+    request<{ status: string; run_id: number; resume_stage?: string }>(
+      `/runs/${id}/request-changes`,
+      {
+        method: "POST",
+        body: JSON.stringify({ comment: comment || undefined }),
+      },
+    ),
+  discardRun: (id: number) =>
+    request<{ status: string; run_id: number }>(`/runs/${id}/discard`, { method: "POST" }),
+  getPreferences: () => request<UserPreferences>("/settings/preferences"),
+  updatePreferences: (body: UserPreferences) =>
+    request<UserPreferences>("/settings/preferences", {
+      method: "PUT",
+      body: JSON.stringify(body),
     }),
   getLlmSettings: () => request<LlmSettings>("/settings/llm"),
   updateLlmSettings: (body: LlmSettingsUpdate) =>
