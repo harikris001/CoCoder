@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -37,6 +38,7 @@ from tools.github.git_ops import (
 )
 from tools.github.issue_type import fallback_github_ops, sanitize_github_ops
 from tools.github.pull_requests import build_pr_body, create_pull_request
+from orchestrator.waves import iter_task_waves, task_id, task_owner
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +142,10 @@ def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[
     prompt = user_text
     for attempt in range(retries + 1):
         try:
-            result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+            result = agent.invoke(
+                {"messages": [{"role": "user", "content": prompt}]},
+                config={"recursion_limit": 12},
+            )
             parsed = _structured(result)
             if "raw" in parsed and len(parsed) == 1:
                 raise ValueError(f"Agent did not return structured JSON: {parsed['raw'][:300]}")
@@ -165,9 +170,36 @@ def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[
 
 async def _invoke_agent(agent: Any, user_text: str, *, retries: int = 2) -> dict[str, Any]:
     """Async wrapper — runs the blocking LLM call in a thread to avoid starving the event loop."""
-    import asyncio
-
     return await asyncio.to_thread(_invoke_agent_sync, agent, user_text, retries=retries)
+
+
+async def _run_one_develop_task(
+    *,
+    task: dict[str, Any],
+    state: PipelineState,
+    workspace: Path,
+    pm: dict[str, Any],
+    architecture: dict[str, Any],
+    review: dict[str, Any],
+) -> dict[str, Any]:
+    """Invoke a single backend/frontend agent. Safe to run concurrently."""
+    configure_tools(workspace, state["repo_db_id"])
+    owner = task_owner(task)
+    prompt = (
+        f"Task: {task.get('title')}\n{task.get('description')}\n\n"
+        f"You may only create or modify these files: "
+        f"{task.get('target_files') or '(unspecified — keep the change small)'}\n"
+        f"Do not edit files assigned to other parallel tasks.\n\n"
+        f"Acceptance criteria: {pm.get('acceptance_criteria')}\n\n"
+        f"Architecture: {json.dumps(architecture)}\n\n"
+        f"Prior review feedback: {json.dumps(review)}\n\n"
+        f"Use tools to inspect and edit files in the repo workspace."
+    )
+    if owner == "frontend":
+        agent = FrontendAgent(user_id=state.get("user_id"))
+    else:
+        agent = BackendAgent(user_id=state.get("user_id"))
+    return await _invoke_agent(agent, prompt)
 
 
 async def _update_run(run_id: int, **fields: Any) -> None:
@@ -540,45 +572,76 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                         "title": "Implement fix",
                         "description": json.dumps(architecture),
                         "owner": "backend",
+                        "target_files": list(architecture.get("files_to_modify") or [])
+                        + list(architecture.get("new_files") or []),
                         "depends_on": [],
                     }
                 ]
 
-            for task in tasks:
-                task_id = str(task.get("id") or "")
-                if task_id and task_id in completed_task_ids:
-                    await _event(run_id, "develop", f"Skipping completed task {task_id}")
-                    continue
-
-                owner = (task.get("owner") or "backend").lower()
-                prompt = (
-                    f"Task: {task.get('title')}\n{task.get('description')}\n\n"
-                    f"Acceptance criteria: {pm.get('acceptance_criteria')}\n\n"
-                    f"Architecture: {json.dumps(architecture)}\n\n"
-                    f"Prior review feedback: {json.dumps(review)}\n\n"
-                    f"Use tools to inspect and edit files in the repo workspace."
+            waves = iter_task_waves(tasks, completed_task_ids)
+            prior_review = state.get("review") or review
+            if not waves and prior_review.get("approved"):
+                review = prior_review
+                state["review"] = review
+                checkpoint_stage = "review"
+                await _event(
+                    run_id,
+                    "checkpoint",
+                    "Skipped review (already approved; no new develop work)",
+                    payload=review,
                 )
-                if owner == "frontend":
-                    agent = FrontendAgent(user_id=state.get("user_id"))
-                else:
-                    agent = BackendAgent(user_id=state.get("user_id"))
-                configure_tools(workspace, state["repo_db_id"])
-                dev_out = await _invoke_agent(agent, prompt)
-                files_touched.extend(dev_out.get("files_modified") or [])
-                files_touched.extend(dev_out.get("files_created") or [])
+                break
 
-                title = (task.get("title") or task_id or "task").strip()
-                committed = commit_all(
-                    repo,
-                    f"cocoder: task {task_id or 'task'} — {title}",
+            for wave in waves:
+                labels = ", ".join(
+                    f"{task_owner(t)} {task_id(t) or 'task'}" for t in wave
                 )
-                if task_id:
-                    completed_task_ids.append(task_id)
+                await _event(
+                    run_id,
+                    "develop",
+                    f"Running {len(wave)} task(s) in parallel: {labels}"
+                    if len(wave) > 1
+                    else f"Running task {labels}",
+                )
+                results = await asyncio.gather(
+                    *[
+                        _run_one_develop_task(
+                            task=task,
+                            state=state,
+                            workspace=workspace,
+                            pm=pm,
+                            architecture=architecture,
+                            review=review,
+                        )
+                        for task in wave
+                    ],
+                    return_exceptions=True,
+                )
+                for task, result in zip(wave, results, strict=True):
+                    tid = task_id(task)
+                    owner = task_owner(task)
+                    if isinstance(result, BaseException):
+                        raise result
+                    files_touched.extend(result.get("files_modified") or [])
+                    files_touched.extend(result.get("files_created") or [])
+                    if tid:
+                        completed_task_ids.append(tid)
+                    await _event(
+                        run_id,
+                        "develop",
+                        f"{owner} finished task {tid or 'task'}",
+                        payload=result,
+                    )
+
+                title_bits = [
+                    f"{task_id(t) or 'task'} — {(t.get('title') or '').strip()}"
+                    for t in wave
+                ]
+                committed = commit_all(repo, "cocoder: " + "; ".join(title_bits))
                 files_touched = sorted(set(files_touched))
                 _, diff_files = get_diff(repo)
                 if diff_files:
                     files_touched = sorted(set(files_touched) | set(diff_files))
-
                 checkpoint_stage = "develop"
                 await _update_run(
                     run_id,
@@ -586,13 +649,8 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     completed_task_ids=completed_task_ids,
                     checkpoint_stage=checkpoint_stage,
                 )
-                await _event(
-                    run_id,
-                    "develop",
-                    f"{owner} finished task {task_id}"
-                    + (" (committed)" if committed else " (no file changes)"),
-                    payload=dev_out,
-                )
+                if committed:
+                    await _event(run_id, "develop", "Committed wave changes")
 
             files_touched = sorted(set(files_touched))
             diff, diff_files = get_diff(repo)

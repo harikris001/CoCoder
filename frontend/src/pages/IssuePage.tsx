@@ -208,6 +208,12 @@ function IssueRunView({ runId }: { runId: number }) {
 
   useEffect(() => {
     if (!isLive) return;
+    const id = window.setInterval(() => void load().catch(() => {}), 2000);
+    return () => window.clearInterval(id);
+  }, [isLive, load]);
+
+  useEffect(() => {
+    if (!isLive) return;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [isLive]);

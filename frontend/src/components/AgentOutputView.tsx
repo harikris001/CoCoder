@@ -196,6 +196,11 @@ function PlannerView({ data }: { data: Record<string, unknown> }) {
                 {typeof t.description === "string" && (
                   <p className="mt-1.5 text-[13px] leading-[1.55] text-muted">{t.description}</p>
                 )}
+                {Array.isArray(t.target_files) && t.target_files.length > 0 && (
+                  <p className="mt-2 font-mono text-[11px] text-faint">
+                    files · {t.target_files.map(String).join(", ")}
+                  </p>
+                )}
                 {Array.isArray(t.depends_on) && t.depends_on.length > 0 && (
                   <p className="mt-2 font-mono text-[11px] text-faint">
                     depends on · {t.depends_on.map(String).join(", ")}

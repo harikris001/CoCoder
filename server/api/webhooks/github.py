@@ -92,9 +92,9 @@ async def github_webhook(
     if x_github_event == "issues" and action in {"opened", "reopened"}:
         run_id = await _enqueue_issue_run(payload)
         if run_id is not None:
-            from orchestrator.runner import execute_run
+            from orchestrator.runner import schedule_execute_run
 
-            background_tasks.add_task(execute_run, run_id)
+            schedule_execute_run(run_id)
         return {"status": "accepted", "run_id": run_id}
 
     return {"status": "ignored", "event": x_github_event, "action": action}

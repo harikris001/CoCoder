@@ -22,7 +22,7 @@ class ArchitectureAgent(BaseAgent):
         "- Requirements (from PM Agent)\n"
         "- Repository Index (via tools)\n\n"
         "## Output\n\n"
-        "- Files to modify\n"
+        "- Files to modify, grouped by layer when possible\n"
         "- New files to create\n"
         "- Risks\n"
         "- Dependencies\n"

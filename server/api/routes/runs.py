@@ -132,6 +132,8 @@ async def get_run_diff(
 
 def _next_resume_stage(run: Run) -> str:
     """First incomplete stage for resume messaging."""
+    if not run.gitops_output:
+        return "branch"
     if not run.pm_output:
         return "pm"
     if not run.architecture_output:
@@ -158,7 +160,9 @@ async def retry_run(
         )
     if run.status == "discarded":
         raise HTTPException(status_code=409, detail="Discarded runs cannot be retried")
-    if run.status in {"queued", "running"}:
+    from orchestrator.runner import is_run_in_flight, schedule_execute_run
+
+    if run.status in {"queued", "running"} and is_run_in_flight(run_id):
         raise HTTPException(status_code=409, detail="Run is already in progress")
 
     resume_stage = _next_resume_stage(run)
@@ -182,9 +186,7 @@ async def retry_run(
     )
     await db.commit()
 
-    from orchestrator.runner import execute_run
-
-    background_tasks.add_task(execute_run, run_id)
+    schedule_execute_run(run_id)
     return {"status": "queued", "run_id": run_id, "resume_stage": resume_stage}
 
 
@@ -208,9 +210,9 @@ async def approve_run(
     await append_run_event(db, run, stage="gitops", message="Human approved push and PR")
     await db.commit()
 
-    from orchestrator.runner import execute_run
+    from orchestrator.runner import schedule_execute_run
 
-    background_tasks.add_task(execute_run, run_id, "gitops")
+    schedule_execute_run(run_id, "gitops")
     return {"status": "queued", "run_id": run_id, "phase": "gitops"}
 
 
@@ -252,9 +254,9 @@ async def request_run_changes(
     )
     await db.commit()
 
-    from orchestrator.runner import execute_run
+    from orchestrator.runner import schedule_execute_run
 
-    background_tasks.add_task(execute_run, run_id)
+    schedule_execute_run(run_id)
     return {"status": "queued", "run_id": run_id, "resume_stage": "develop"}
 
 

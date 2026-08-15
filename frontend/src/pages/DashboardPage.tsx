@@ -193,7 +193,7 @@ export function DashboardPage() {
     if (!hasLive) return;
     const id = window.setInterval(() => {
       void load().catch(() => {});
-    }, 8000);
+    }, 3000);
     return () => window.clearInterval(id);
   }, [hasLive, load]);
 
