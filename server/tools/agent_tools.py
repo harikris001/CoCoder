@@ -16,6 +16,12 @@ _workspace_var: ContextVar[Path] = ContextVar("workspace", default=Path("./works
 _repo_id_var: ContextVar[str] = ContextVar("repo_id", default="default")
 _fs_var: ContextVar[FileSystem] = ContextVar("fs", default=FileSystem("./workspace"))
 
+_READ_FILE_MAX_CHARS = 12000
+_LIST_MAX_ENTRIES = 200
+_LIST_IGNORED_DIRS = frozenset(
+    {".git", "node_modules", "dist", "build", ".next", ".cache", "coverage", ".venv", "venv"}
+)
+
 
 def configure_tools(workspace: str | Path, repo_id: int | str) -> None:
     """Set workspace and repo_id for the current execution context (thread-safe)."""
@@ -40,8 +46,15 @@ def read_file(file_path: str) -> str:
     """Read a file from the active repository workspace.
 
     Do not read the same file twice — reuse the content from your earlier call.
-    Limit yourself to a few targeted reads rather than scanning the whole tree."""
-    return _fs_var.get().read(file_path)
+    Limit yourself to a few targeted reads rather than scanning the whole tree.
+    Large files are truncated to protect the conversation context."""
+    content = _fs_var.get().read(file_path)
+    if len(content) > _READ_FILE_MAX_CHARS:
+        return (
+            content[:_READ_FILE_MAX_CHARS]
+            + f"\n\n...[truncated {len(content) - _READ_FILE_MAX_CHARS} chars]"
+        )
+    return content
 
 
 @tool
@@ -66,8 +79,20 @@ def create_file(file_path: str, content: str = "") -> str:
 def list_files(directory: str = ".") -> list[str]:
     """List files under a directory in the active repository workspace.
 
-    Call once per directory. Do not list the same directory again."""
-    return _fs_var.get().list_directory(directory)
+    Call once per directory. Do not list the same directory again.
+    Dependency/build directories are skipped and results are capped."""
+    entries = _fs_var.get().list_directory(directory)
+    filtered = [
+        e
+        for e in entries
+        if not any(part in _LIST_IGNORED_DIRS for part in Path(e).parts)
+    ]
+    if len(filtered) > _LIST_MAX_ENTRIES:
+        hidden = len(filtered) - _LIST_MAX_ENTRIES
+        return filtered[:_LIST_MAX_ENTRIES] + [
+            f"... and {hidden} more entries (list a subdirectory instead)"
+        ]
+    return filtered
 
 
 @tool

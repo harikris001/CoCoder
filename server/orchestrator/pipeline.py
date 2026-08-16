@@ -38,6 +38,7 @@ from tools.github.git_ops import (
     push_branch,
 )
 from langgraph.errors import GraphRecursionError
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from tools.github.issue_type import fallback_github_ops, sanitize_github_ops
 from tools.github.pull_requests import build_pr_body, create_pull_request
 from orchestrator.gates import after_quality_gate
@@ -137,7 +138,13 @@ def _structured(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
-def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[str, Any]:
+def _invoke_agent_sync(
+    agent: Any,
+    user_text: str,
+    *,
+    retries: int = 2,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
     """Invoke an agent and extract JSON structured output, with retries.
 
     This is a *synchronous* helper — callers from async code should use
@@ -146,11 +153,14 @@ def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[
     last_error: Exception | None = None
     prompt = user_text
     recursion_limit = get_settings().agent_recursion_limit
+    config: dict[str, Any] = {"recursion_limit": recursion_limit}
+    if thread_id:
+        config["thread_id"] = thread_id
     for attempt in range(retries + 1):
         try:
             result = agent.invoke(
                 {"messages": [{"role": "user", "content": prompt}]},
-                config={"recursion_limit": recursion_limit},
+                config=config,
             )
             parsed = _structured(result)
             if "raw" in parsed and len(parsed) == 1:
@@ -164,6 +174,34 @@ def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[
                 recursion_limit,
             )
             raise
+        except ToolCallLimitExceededError as exc:
+            # Tool budget exhausted: file changes are already saved on disk, so
+            # finish the task with a single no-tool call that emits the structured
+            # response instead of failing the run or burning more tool calls.
+            logger.warning("Agent tool budget exhausted; finalizing output: %s", exc)
+            result = agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                f"{user_text}\n\n"
+                                "IMPORTANT: Your tool-call budget ran out. Any file "
+                                "changes you already made are saved on disk. Do NOT "
+                                "call any tools. Immediately call the structured "
+                                "response tool with the final result of your "
+                                "completed work, including the exact files you "
+                                "modified or created."
+                            ),
+                        }
+                    ]
+                },
+                config=config,
+            )
+            parsed = _structured(result)
+            if "raw" in parsed and len(parsed) == 1:
+                raise ValueError(f"Agent did not return structured JSON: {parsed['raw'][:300]}")
+            return parsed
         except Exception as exc:  # noqa: BLE001 — retry structured-output failures
             last_error = exc
             logger.warning(
@@ -182,9 +220,54 @@ def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[
     raise last_error
 
 
-async def _invoke_agent(agent: Any, user_text: str, *, retries: int = 2) -> dict[str, Any]:
+async def _invoke_agent(
+    agent: Any,
+    user_text: str,
+    *,
+    retries: int = 2,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
     """Async wrapper — runs the blocking LLM call in a thread to avoid starving the event loop."""
-    return await asyncio.to_thread(_invoke_agent_sync, agent, user_text, retries=retries)
+    return await asyncio.to_thread(
+        _invoke_agent_sync, agent, user_text, retries=retries, thread_id=thread_id
+    )
+
+
+def _build_dev_task_prompt(
+    *,
+    task: dict[str, Any],
+    pm: dict[str, Any],
+    architecture: dict[str, Any],
+    review: dict[str, Any],
+    test: dict[str, Any],
+    owner: str,
+) -> str:
+    """Build the developer agent prompt for one task.
+
+    Tester/reviewer feedback sections are only included when the agents have
+    actually run (their schemas require ``summary``), so first-attempt prompts
+    don't mislead the model with placeholder defaults.
+    """
+    prompt = (
+        f"Task: {task.get('title')}\n{task.get('description')}\n\n"
+        f"You may only create or modify these files: "
+        f"{task.get('target_files') or '(unspecified — keep the change small)'}\n"
+        f"Do not edit files assigned to other tasks.\n\n"
+        f"Acceptance criteria: {pm.get('acceptance_criteria')}\n\n"
+        f"Architecture: {json.dumps(architecture)}\n\n"
+    )
+    if test and test.get("summary"):
+        prompt += f"Prior tester feedback: {json.dumps(test)}\n\n"
+    if review and review.get("summary"):
+        prompt += f"Prior review feedback: {json.dumps(review)}\n\n"
+    prompt += (
+        f"You have already completed earlier {owner} tasks in this run — the "
+        f"conversation above holds your previous tool calls and edits. Continue "
+        f"from where you left off; inspect and build on the files you already "
+        f"changed instead of recreating them.\n\n"
+        f"Use tools to inspect and edit files in the repo workspace."
+    )
+    return prompt
 
 
 async def _run_one_develop_task(
@@ -196,26 +279,23 @@ async def _run_one_develop_task(
     architecture: dict[str, Any],
     review: dict[str, Any],
     test: dict[str, Any],
+    agent: Any,
+    thread_id: str,
 ) -> dict[str, Any]:
     """Invoke a single backend/frontend agent for one task."""
     configure_tools(workspace, state["repo_db_id"])
     owner = task_owner(task)
-    prompt = (
-        f"Task: {task.get('title')}\n{task.get('description')}\n\n"
-        f"You may only create or modify these files: "
-        f"{task.get('target_files') or '(unspecified — keep the change small)'}\n"
-        f"Do not edit files assigned to other tasks.\n\n"
-        f"Acceptance criteria: {pm.get('acceptance_criteria')}\n\n"
-        f"Architecture: {json.dumps(architecture)}\n\n"
-        f"Prior tester feedback: {json.dumps(test)}\n\n"
-        f"Prior review feedback: {json.dumps(review)}\n\n"
-        f"Use tools to inspect and edit files in the repo workspace."
+    prompt = _build_dev_task_prompt(
+        task=task,
+        pm=pm,
+        architecture=architecture,
+        review=review,
+        test=test,
+        owner=owner,
     )
-    if owner == "frontend":
-        agent = FrontendAgent(user_id=state.get("user_id"))
-    else:
-        agent = BackendAgent(user_id=state.get("user_id"))
-    return await _invoke_agent(agent, prompt)
+    return await _invoke_agent(
+        agent, prompt, thread_id=thread_id
+    )
 
 
 async def _update_run(run_id: int, **fields: Any) -> None:
@@ -445,6 +525,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                         f"Labels: {label_text}\n\n"
                         f"Description:\n{state.get('issue_body') or '(empty)'}"
                     ),
+                    thread_id=f"run{run_id}-gitops",
                 )
                 gitops = sanitize_github_ops(
                     raw_gitops,
@@ -521,6 +602,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     f"{state.get('issue_body') or ''}\n\n"
                     f"Repository summary:\n{context[:4000]}"
                 ),
+                thread_id=f"run{run_id}-pm",
             )
             state["pm"] = pm
             checkpoint_stage = "pm"
@@ -541,6 +623,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     f"Requirements:\n{json.dumps(pm, indent=2)}\n\n"
                     f"Use search_repository if needed. Hybrid context:\n{context[:6000]}"
                 ),
+                thread_id=f"run{run_id}-architecture",
             )
             state["architecture"] = architecture
             checkpoint_stage = "architecture"
@@ -565,6 +648,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     f"PM:\n{json.dumps(pm, indent=2)}\n\n"
                     f"Architecture:\n{json.dumps(architecture, indent=2)}"
                 ),
+                thread_id=f"run{run_id}-planner",
             )
             state["planner"] = planner
             checkpoint_stage = "planner"
@@ -575,6 +659,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
         test: dict[str, Any] = state.get("test") or {"passed": False}
         retries = 0
         max_retries = settings.max_review_retries
+        owner_agents: dict[str, Any] = {}
 
         while retries <= max_retries:
             await _update_run(run_id, stage="develop", retry_count=retries)
@@ -616,6 +701,14 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 owner = task_owner(task)
                 label = f"{owner} {tid or 'task'}"
                 await _event(run_id, "develop", f"Running task {label}")
+                agent = owner_agents.get(owner)
+                if agent is None:
+                    agent = (
+                        FrontendAgent(user_id=state.get("user_id"))
+                        if owner == "frontend"
+                        else BackendAgent(user_id=state.get("user_id"))
+                    )
+                    owner_agents[owner] = agent
                 result = await _run_one_develop_task(
                     task=task,
                     state=state,
@@ -624,6 +717,8 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     architecture=architecture,
                     review=review,
                     test=test,
+                    agent=agent,
+                    thread_id=f"run{run_id}-{owner}-{retries}",
                 )
                 files_touched.extend(result.get("files_modified") or [])
                 files_touched.extend(result.get("files_created") or [])
@@ -686,6 +781,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                             f"If tests fail, list bugs developers must fix.\n"
                             f"If you create temporary test files, delete all of them before finishing."
                         ),
+                        thread_id=f"run{run_id}-tester-{retries}",
                     )
                 finally:
                     removed = restore_workspace_snapshot(workspace, tester_snapshot)
@@ -749,6 +845,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     f"Diff (truncated):\n{diff[:8000]}\n\n"
                     f"Approve only if criteria are met."
                 ),
+                thread_id=f"run{run_id}-review-{retries}",
             )
             state["review"] = review
             checkpoint_stage = "review"

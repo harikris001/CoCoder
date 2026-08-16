@@ -166,7 +166,9 @@ class RecursionLimitTests(unittest.TestCase):
         with self.assertRaises(GraphRecursionError):
             _invoke_agent_sync(agent, "do work", retries=2)
         self.assertEqual(agent.calls, 1)
-        self.assertEqual(agent.limits[0], 50)
+        from config import get_settings
+
+        self.assertEqual(agent.limits[0], get_settings().agent_recursion_limit)
 
 
 if __name__ == "__main__":
