@@ -25,7 +25,7 @@ It is closer to an on-call teammate than a chat window.
 
 - **Connects GitHub** with a personal access token or OAuth
 - **Indexes** the repo with a hybrid retrieval stack (embeddings + AST + dependency graph)
-- **Runs a specialist crew** on each issue: GitHub Ops → PM → architecture → task planner → backend/frontend → reviewer
+- **Runs a specialist crew** on each issue: GitHub Ops → PM → architecture → task planner → backend/frontend → tester → reviewer
 - **Opens a PR** on `{type}/{issue-number}-{title-slug}` (for example `fix/42-login-crash`) that references `Fixes #<n>` or `Closes #<n>`
 - **Streams the run** over a websocket so you can watch stages, diffs, and agent output as they happen
 - **BYOK** for OpenAI, Anthropic, Google, OpenRouter, or a custom OpenAI-compatible(Ollama etc.) endpoint (keys stored encrypted, never returned in full)
@@ -41,7 +41,8 @@ flowchart LR
   pm --> arch[Architecture]
   arch --> plan[Task planner]
   plan --> dev[Backend / Frontend]
-  dev --> review[Reviewer]
+  dev --> tester[Tester]
+  tester --> review[Reviewer]
   review --> pr[Commit, push, PR]
 ```
 
@@ -54,7 +55,8 @@ flowchart LR
 | Architecture | Maps which files and layers should change |
 | Planner | Splits work into backend/frontend tasks |
 | Develop | Agents edit the workspace with file tools |
-| Review | Approves or sends work back (up to `MAX_REVIEW_RETRIES`) |
+| Test | Runs allowlisted tests (pytest / npm test / cargo / go / make) and sends bugs back to develop (same `MAX_REVIEW_RETRIES` budget as review) |
+| Review | Approves or sends work back (up to `MAX_REVIEW_RETRIES` total with tester) |
 | GitHub Ops (PR) | Commits, pushes, opens the pull request |
 
 Locally, GitHub cannot reach `localhost`. Use **Sync open issues** in the UI, or expose the API with a tunnel and register a webhook (see below).
@@ -137,6 +139,7 @@ Copy [`server/.env.example`](server/.env.example). Important variables:
 | `CORS_ORIGINS` | Comma-separated dashboard origins |
 | `AUTH_COOKIE_SECURE` | Set `true` behind HTTPS |
 | `COCODER_SECRETS_KEY` | Fernet key for encrypted secrets; auto-created if unset |
+| `AGENT_RECURSION_LIMIT` | Max LangGraph steps per agent invoke (default 12) |
 
 SQLite, workspaces, and the index live under `server/.cocoder/` and `server/workspace/` (gitignored).
 
@@ -173,7 +176,7 @@ On Windows 10+, `curl.exe -X POST http://localhost:8000/repos/<repo_id>/issues/s
 CoCoder/
 ├── frontend/     Vite + React dashboard (runs, repos, live events, settings)
 └── server/       FastAPI API
-    ├── agents/         PM, architecture, planner, backend, frontend, reviewer
+    ├── agents/         PM, architecture, planner, backend, frontend, tester, reviewer
     ├── orchestrator/   Pipeline + background runner
     ├── indexing/       Hybrid RAG / AST / dependency graph
     ├── tools/          Git, GitHub issues/PRs, filesystem tools

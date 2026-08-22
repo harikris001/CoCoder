@@ -97,6 +97,7 @@ export type RunDetail = RunSummary & {
   pm_output?: Record<string, unknown> | null;
   architecture_output?: Record<string, unknown> | null;
   planner_output?: Record<string, unknown> | null;
+  test_output?: Record<string, unknown> | null;
   review_output?: Record<string, unknown> | null;
   files_touched?: string[] | null;
   completed_task_ids?: string[] | null;

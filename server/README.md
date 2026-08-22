@@ -46,4 +46,4 @@ Webhook checklist:
 
 ## Pipeline
 
-Issue webhook (or sync) → clone → GitHub Ops agent (`{type}/{n}-{slug}`) → hybrid index (RAG + AST + deps) → PM → Architecture → Task Planner → Backend/Frontend → Reviewer → commit/push → PR (`Fixes` or `Closes #<n>`).
+Issue webhook (or sync) → clone → GitHub Ops agent (`{type}/{n}-{slug}`) → hybrid index (RAG + AST + deps) → PM → Architecture → Task Planner → Backend/Frontend → Tester → Reviewer → commit/push → PR (`Fixes` or `Closes #<n>`).

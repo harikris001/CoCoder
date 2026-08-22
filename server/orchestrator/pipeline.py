@@ -18,6 +18,7 @@ from agents import (
     PMAgent,
     ReviewerAgent,
     TaskPlannerAgent,
+    TesterAgent,
 )
 from api.services import append_run_event, upsert_pull_request
 from config import get_settings
@@ -36,9 +37,13 @@ from tools.github.git_ops import (
     get_diff,
     push_branch,
 )
+from langgraph.errors import GraphRecursionError
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from tools.github.issue_type import fallback_github_ops, sanitize_github_ops
 from tools.github.pull_requests import build_pr_body, create_pull_request
-from orchestrator.waves import iter_task_waves, task_id, task_owner
+from orchestrator.gates import after_quality_gate
+from orchestrator.tasks import remaining_tasks, task_id, task_owner
+from tools.tests.cleanup import restore_workspace_snapshot, take_workspace_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +67,7 @@ class PipelineState(TypedDict, total=False):
     pm: dict[str, Any]
     architecture: dict[str, Any]
     planner: dict[str, Any]
+    test: dict[str, Any]
     review: dict[str, Any]
     files_touched: list[str]
     completed_task_ids: list[str]
@@ -132,7 +138,13 @@ def _structured(result: Any) -> dict[str, Any]:
     return {"raw": str(result)}
 
 
-def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[str, Any]:
+def _invoke_agent_sync(
+    agent: Any,
+    user_text: str,
+    *,
+    retries: int = 2,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
     """Invoke an agent and extract JSON structured output, with retries.
 
     This is a *synchronous* helper — callers from async code should use
@@ -140,11 +152,51 @@ def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[
     """
     last_error: Exception | None = None
     prompt = user_text
+    recursion_limit = get_settings().agent_recursion_limit
+    config: dict[str, Any] = {"recursion_limit": recursion_limit}
+    if thread_id:
+        config["thread_id"] = thread_id
     for attempt in range(retries + 1):
         try:
             result = agent.invoke(
                 {"messages": [{"role": "user", "content": prompt}]},
-                config={"recursion_limit": 12},
+                config=config,
+            )
+            parsed = _structured(result)
+            if "raw" in parsed and len(parsed) == 1:
+                raise ValueError(f"Agent did not return structured JSON: {parsed['raw'][:300]}")
+            return parsed
+        except GraphRecursionError:
+            # Same cap cannot succeed on retry — developer/tester tool loops need a
+            # higher limit, not three identical failures.
+            logger.warning(
+                "Agent hit recursion_limit=%s; not retrying",
+                recursion_limit,
+            )
+            raise
+        except ToolCallLimitExceededError as exc:
+            # Tool budget exhausted: file changes are already saved on disk, so
+            # finish the task with a single no-tool call that emits the structured
+            # response instead of failing the run or burning more tool calls.
+            logger.warning("Agent tool budget exhausted; finalizing output: %s", exc)
+            result = agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                f"{user_text}\n\n"
+                                "IMPORTANT: Your tool-call budget ran out. Any file "
+                                "changes you already made are saved on disk. Do NOT "
+                                "call any tools. Immediately call the structured "
+                                "response tool with the final result of your "
+                                "completed work, including the exact files you "
+                                "modified or created."
+                            ),
+                        }
+                    ]
+                },
+                config=config,
             )
             parsed = _structured(result)
             if "raw" in parsed and len(parsed) == 1:
@@ -168,9 +220,54 @@ def _invoke_agent_sync(agent: Any, user_text: str, *, retries: int = 2) -> dict[
     raise last_error
 
 
-async def _invoke_agent(agent: Any, user_text: str, *, retries: int = 2) -> dict[str, Any]:
+async def _invoke_agent(
+    agent: Any,
+    user_text: str,
+    *,
+    retries: int = 2,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
     """Async wrapper — runs the blocking LLM call in a thread to avoid starving the event loop."""
-    return await asyncio.to_thread(_invoke_agent_sync, agent, user_text, retries=retries)
+    return await asyncio.to_thread(
+        _invoke_agent_sync, agent, user_text, retries=retries, thread_id=thread_id
+    )
+
+
+def _build_dev_task_prompt(
+    *,
+    task: dict[str, Any],
+    pm: dict[str, Any],
+    architecture: dict[str, Any],
+    review: dict[str, Any],
+    test: dict[str, Any],
+    owner: str,
+) -> str:
+    """Build the developer agent prompt for one task.
+
+    Tester/reviewer feedback sections are only included when the agents have
+    actually run (their schemas require ``summary``), so first-attempt prompts
+    don't mislead the model with placeholder defaults.
+    """
+    prompt = (
+        f"Task: {task.get('title')}\n{task.get('description')}\n\n"
+        f"You may only create or modify these files: "
+        f"{task.get('target_files') or '(unspecified — keep the change small)'}\n"
+        f"Do not edit files assigned to other tasks.\n\n"
+        f"Acceptance criteria: {pm.get('acceptance_criteria')}\n\n"
+        f"Architecture: {json.dumps(architecture)}\n\n"
+    )
+    if test and test.get("summary"):
+        prompt += f"Prior tester feedback: {json.dumps(test)}\n\n"
+    if review and review.get("summary"):
+        prompt += f"Prior review feedback: {json.dumps(review)}\n\n"
+    prompt += (
+        f"You have already completed earlier {owner} tasks in this run — the "
+        f"conversation above holds your previous tool calls and edits. Continue "
+        f"from where you left off; inspect and build on the files you already "
+        f"changed instead of recreating them.\n\n"
+        f"Use tools to inspect and edit files in the repo workspace."
+    )
+    return prompt
 
 
 async def _run_one_develop_task(
@@ -181,25 +278,24 @@ async def _run_one_develop_task(
     pm: dict[str, Any],
     architecture: dict[str, Any],
     review: dict[str, Any],
+    test: dict[str, Any],
+    agent: Any,
+    thread_id: str,
 ) -> dict[str, Any]:
-    """Invoke a single backend/frontend agent. Safe to run concurrently."""
+    """Invoke a single backend/frontend agent for one task."""
     configure_tools(workspace, state["repo_db_id"])
     owner = task_owner(task)
-    prompt = (
-        f"Task: {task.get('title')}\n{task.get('description')}\n\n"
-        f"You may only create or modify these files: "
-        f"{task.get('target_files') or '(unspecified — keep the change small)'}\n"
-        f"Do not edit files assigned to other parallel tasks.\n\n"
-        f"Acceptance criteria: {pm.get('acceptance_criteria')}\n\n"
-        f"Architecture: {json.dumps(architecture)}\n\n"
-        f"Prior review feedback: {json.dumps(review)}\n\n"
-        f"Use tools to inspect and edit files in the repo workspace."
+    prompt = _build_dev_task_prompt(
+        task=task,
+        pm=pm,
+        architecture=architecture,
+        review=review,
+        test=test,
+        owner=owner,
     )
-    if owner == "frontend":
-        agent = FrontendAgent(user_id=state.get("user_id"))
-    else:
-        agent = BackendAgent(user_id=state.get("user_id"))
-    return await _invoke_agent(agent, prompt)
+    return await _invoke_agent(
+        agent, prompt, thread_id=thread_id
+    )
 
 
 async def _update_run(run_id: int, **fields: Any) -> None:
@@ -429,6 +525,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                         f"Labels: {label_text}\n\n"
                         f"Description:\n{state.get('issue_body') or '(empty)'}"
                     ),
+                    thread_id=f"run{run_id}-gitops",
                 )
                 gitops = sanitize_github_ops(
                     raw_gitops,
@@ -505,6 +602,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     f"{state.get('issue_body') or ''}\n\n"
                     f"Repository summary:\n{context[:4000]}"
                 ),
+                thread_id=f"run{run_id}-pm",
             )
             state["pm"] = pm
             checkpoint_stage = "pm"
@@ -525,6 +623,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     f"Requirements:\n{json.dumps(pm, indent=2)}\n\n"
                     f"Use search_repository if needed. Hybrid context:\n{context[:6000]}"
                 ),
+                thread_id=f"run{run_id}-architecture",
             )
             state["architecture"] = architecture
             checkpoint_stage = "architecture"
@@ -549,6 +648,7 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     f"PM:\n{json.dumps(pm, indent=2)}\n\n"
                     f"Architecture:\n{json.dumps(architecture, indent=2)}"
                 ),
+                thread_id=f"run{run_id}-planner",
             )
             state["planner"] = planner
             checkpoint_stage = "planner"
@@ -556,8 +656,10 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
             await _event(run_id, "planner", "Task plan ready", payload=planner)
 
         review: dict[str, Any] = state.get("review") or {"approved": False}
+        test: dict[str, Any] = state.get("test") or {"passed": False}
         retries = 0
         max_retries = settings.max_review_retries
+        owner_agents: dict[str, Any] = {}
 
         while retries <= max_retries:
             await _update_run(run_id, stage="develop", retry_count=retries)
@@ -578,9 +680,9 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     }
                 ]
 
-            waves = iter_task_waves(tasks, completed_task_ids)
+            pending = remaining_tasks(tasks, completed_task_ids)
             prior_review = state.get("review") or review
-            if not waves and prior_review.get("approved"):
+            if not pending and prior_review.get("approved"):
                 review = prior_review
                 state["review"] = review
                 checkpoint_stage = "review"
@@ -592,52 +694,45 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 )
                 break
 
-            for wave in waves:
-                labels = ", ".join(
-                    f"{task_owner(t)} {task_id(t) or 'task'}" for t in wave
+            ran_develop = False
+            for task in pending:
+                ran_develop = True
+                tid = task_id(task)
+                owner = task_owner(task)
+                label = f"{owner} {tid or 'task'}"
+                await _event(run_id, "develop", f"Running task {label}")
+                agent = owner_agents.get(owner)
+                if agent is None:
+                    agent = (
+                        FrontendAgent(user_id=state.get("user_id"))
+                        if owner == "frontend"
+                        else BackendAgent(user_id=state.get("user_id"))
+                    )
+                    owner_agents[owner] = agent
+                result = await _run_one_develop_task(
+                    task=task,
+                    state=state,
+                    workspace=workspace,
+                    pm=pm,
+                    architecture=architecture,
+                    review=review,
+                    test=test,
+                    agent=agent,
+                    thread_id=f"run{run_id}-{owner}-{retries}",
                 )
+                files_touched.extend(result.get("files_modified") or [])
+                files_touched.extend(result.get("files_created") or [])
+                if tid:
+                    completed_task_ids.append(tid)
                 await _event(
                     run_id,
                     "develop",
-                    f"Running {len(wave)} task(s) in parallel: {labels}"
-                    if len(wave) > 1
-                    else f"Running task {labels}",
+                    f"{owner} finished task {tid or 'task'}",
+                    payload=result,
                 )
-                results = await asyncio.gather(
-                    *[
-                        _run_one_develop_task(
-                            task=task,
-                            state=state,
-                            workspace=workspace,
-                            pm=pm,
-                            architecture=architecture,
-                            review=review,
-                        )
-                        for task in wave
-                    ],
-                    return_exceptions=True,
-                )
-                for task, result in zip(wave, results, strict=True):
-                    tid = task_id(task)
-                    owner = task_owner(task)
-                    if isinstance(result, BaseException):
-                        raise result
-                    files_touched.extend(result.get("files_modified") or [])
-                    files_touched.extend(result.get("files_created") or [])
-                    if tid:
-                        completed_task_ids.append(tid)
-                    await _event(
-                        run_id,
-                        "develop",
-                        f"{owner} finished task {tid or 'task'}",
-                        payload=result,
-                    )
 
-                title_bits = [
-                    f"{task_id(t) or 'task'} — {(t.get('title') or '').strip()}"
-                    for t in wave
-                ]
-                committed = commit_all(repo, "cocoder: " + "; ".join(title_bits))
+                title = f"{tid or 'task'} — {(task.get('title') or '').strip()}"
+                committed = commit_all(repo, "cocoder: " + title)
                 files_touched = sorted(set(files_touched))
                 _, diff_files = get_diff(repo)
                 if diff_files:
@@ -650,13 +745,92 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                     checkpoint_stage=checkpoint_stage,
                 )
                 if committed:
-                    await _event(run_id, "develop", "Committed wave changes")
+                    await _event(run_id, "develop", "Committed task changes")
 
             files_touched = sorted(set(files_touched))
             diff, diff_files = get_diff(repo)
             if diff_files:
                 files_touched = sorted(set(files_touched) | set(diff_files))
             await _update_run(run_id, files_touched=files_touched)
+
+            prior_test = state.get("test") or test
+            if not ran_develop and prior_test.get("passed"):
+                test = prior_test
+                state["test"] = test
+                await _event(
+                    run_id,
+                    "checkpoint",
+                    "Skipped tester (already passed; no new develop work)",
+                    payload=test,
+                )
+            else:
+                await _update_run(run_id, stage="test")
+                await _event(run_id, "test", "Tester Agent running tests")
+                tester = TesterAgent(user_id=state.get("user_id"))
+                configure_tools(workspace, state["repo_db_id"])
+                tester_snapshot = take_workspace_snapshot(workspace)
+                test = {}
+                try:
+                    test = await _invoke_agent(
+                        tester,
+                        (
+                            f"Acceptance criteria:\n{json.dumps(pm.get('acceptance_criteria'))}\n\n"
+                            f"Files touched: {files_touched}\n\n"
+                            f"Diff (truncated):\n{diff[:8000]}\n\n"
+                            f"Call run_tests, then report whether the change works.\n"
+                            f"If tests fail, list bugs developers must fix.\n"
+                            f"If you create temporary test files, delete all of them before finishing."
+                        ),
+                        thread_id=f"run{run_id}-tester-{retries}",
+                    )
+                finally:
+                    removed = restore_workspace_snapshot(workspace, tester_snapshot)
+                if removed:
+                    test = dict(test or {})
+                    created = list(test.get("files_created") or [])
+                    test["files_created"] = sorted(set(created) | set(removed))
+                    test["artifacts_removed"] = removed
+                    await _event(
+                        run_id,
+                        "test",
+                        f"Removed {len(removed)} tester artifact(s) before the next agent",
+                        payload={"removed": removed},
+                    )
+                state["test"] = test
+                checkpoint_stage = "test"
+                await _update_run(run_id, test_output=test, checkpoint_stage=checkpoint_stage)
+                await _event(run_id, "test", "Tester complete", payload=test)
+
+                action = after_quality_gate(
+                    passed=bool(test.get("passed")),
+                    retries=retries,
+                    max_retries=max_retries,
+                )
+                if action != "proceed":
+                    retries += 1
+                    completed_task_ids = []
+                    state["completed_task_ids"] = completed_task_ids
+                    await _update_run(run_id, completed_task_ids=completed_task_ids)
+                    if action == "needs_human":
+                        await _accumulate_execution(
+                            run_id,
+                            attempt_started,
+                            status="needs_human",
+                            stage="needs_human",
+                            error="Tester retries exhausted",
+                            checkpoint_stage=checkpoint_stage,
+                            finished_at=datetime.now(timezone.utc),
+                        )
+                        await _event(
+                            run_id,
+                            "needs_human",
+                            "Needs human intervention after tester failures",
+                        )
+                        state["status"] = "needs_human"
+                        state["completed_task_ids"] = completed_task_ids
+                        state["checkpoint_stage"] = checkpoint_stage or "test"
+                        return state
+                    continue
 
             await _update_run(run_id, stage="review")
             await _event(run_id, "review", "Reviewer Agent checking changes")
@@ -667,23 +841,29 @@ async def run_pipeline(state: PipelineState) -> PipelineState:
                 (
                     f"Acceptance criteria:\n{json.dumps(pm.get('acceptance_criteria'))}\n\n"
                     f"Files touched: {files_touched}\n\n"
+                    f"Tester result: {json.dumps(test)}\n\n"
                     f"Diff (truncated):\n{diff[:8000]}\n\n"
                     f"Approve only if criteria are met."
                 ),
+                thread_id=f"run{run_id}-review-{retries}",
             )
             state["review"] = review
             checkpoint_stage = "review"
             await _update_run(run_id, review_output=review, checkpoint_stage=checkpoint_stage)
             await _event(run_id, "review", "Review complete", payload=review)
 
-            if review.get("approved"):
+            action = after_quality_gate(
+                passed=bool(review.get("approved")),
+                retries=retries,
+                max_retries=max_retries,
+            )
+            if action == "proceed":
                 break
             retries += 1
-            # Clear completed tasks so develop can apply review feedback on next cycle
             completed_task_ids = []
             state["completed_task_ids"] = completed_task_ids
             await _update_run(run_id, completed_task_ids=completed_task_ids)
-            if retries > max_retries:
+            if action == "needs_human":
                 await _accumulate_execution(
                     run_id,
                     attempt_started,

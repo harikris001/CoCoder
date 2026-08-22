@@ -115,6 +115,7 @@ class Run(Base):
     pm_output: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     architecture_output: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     planner_output: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    test_output: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     review_output: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     files_touched: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
     completed_task_ids: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)

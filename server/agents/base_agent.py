@@ -4,21 +4,30 @@ from abc import ABC
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import ToolErrorMiddleware
+from langchain.agents.middleware import (
+    SummarizationMiddleware,
+    ToolCallLimitMiddleware,
+    ToolErrorMiddleware,
+)
 from langchain.agents.middleware.types import ToolCallRequest
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
-from llm.factory import build_chat_model
+from config import get_settings
+from agents.checkpointer import get_checkpointer
+from llm.factory import build_chat_model, build_summary_chat_model
 
 # Appended to every agent prompt so cheaper models reliably emit schema JSON
 # via the structured-output tool rather than free-form prose.
 _STRUCTURED_OUTPUT_HINT = (
     "\n\n## Structured output (required)\n\n"
-    "When you are done, you MUST finish by calling the structured response tool "
-    "with valid JSON arguments that match the required schema. "
+    "When you are done — and no later than the moment your changes are written — "
+    "you MUST finish by calling the structured response tool with valid JSON "
+    "arguments that match the required schema. "
+    "Do not re-read or re-verify files after editing; trust the tool results you "
+    "already received. "
     "Do not end with empty content or plain prose only — the final step is always "
     "that structured JSON tool call."
 )
@@ -26,8 +35,23 @@ _STRUCTURED_OUTPUT_HINT = (
 _TOOL_ERROR_HINT = (
     "\n\n## Tool errors\n\n"
     "If a tool returns an error (for example FileNotFoundError or a bad path), "
-    "do not stop. Fix the arguments, search or list to find the correct path, "
-    "and retry. Only finish after the task is done or truly blocked."
+    "fix the arguments and retry once. If it fails again, stop retrying and "
+    "finish with the structured response tool."
+)
+
+_MEMORY_HINT = (
+    "\n\n## Conversation memory\n\n"
+    "You have full visibility of every tool call and its result earlier in this "
+    "conversation. Before calling a tool, check whether an earlier call already "
+    "returned what you need, and reuse it. Never call a tool twice for the same "
+    "file, query, or directory."
+)
+
+_TOOL_LIMIT_HINT = (
+    "\n\n## Tool budget\n\n"
+    "Your tool budget is limited. If you receive a 'Tool call limit exceeded' "
+    "message, stop calling tools immediately and call the structured response "
+    "tool with the results you already have."
 )
 
 _RECOVERABLE_TOOL_ERRORS = (
@@ -50,7 +74,7 @@ def _on_tool_error(exc: Exception, request: ToolCallRequest) -> str | None:
     return (
         f"`{tool_name}` failed with {type(exc).__name__}: {exc}. "
         "Fix the arguments or find the correct path (list_files / search_repository), "
-        "then retry. Do not stop."
+        "retry once, then finish. Do not loop."
     )
 
 
@@ -74,14 +98,34 @@ class BaseAgent(ABC):
     # virtual property (children CAN override)
     tools: list[BaseTool] = []
 
-    def __init__(self, user_id: int | None = None) -> None:
+    def __init__(self, user_id: int | None = None, *, checkpointer: Any | None = None) -> None:
         self.user_id = user_id
         self._validate_class_attrs()
         system_prompt = self.system_prompt.rstrip() + _STRUCTURED_OUTPUT_HINT
         middleware = []
         if self.tools:
+            settings = get_settings()
             system_prompt += _TOOL_ERROR_HINT
+            system_prompt += _MEMORY_HINT
+            system_prompt += _TOOL_LIMIT_HINT
             middleware.append(ToolErrorMiddleware(on_error=_on_tool_error))
+            middleware.append(
+                ToolCallLimitMiddleware(
+                    run_limit=settings.agent_tool_call_limit,
+                    exit_behavior="error",
+                )
+            )
+            middleware.append(
+                SummarizationMiddleware(
+                    model=self.get_summary_llm(),
+                    trigger=[
+                        ("tokens", 50000),
+                        ("fraction", 0.8),
+                    ],
+                    keep=("messages", 16),
+                )
+            )
+        self.checkpointer = checkpointer if checkpointer is not None else get_checkpointer()
         self.agent = create_agent(
             name=self.name,
             model=self.get_llm(),
@@ -92,6 +136,7 @@ class BaseAgent(ABC):
                 self.response_format,
                 handle_errors=True,
             ),
+            checkpointer=self.checkpointer,
         )
 
     # overridable
@@ -101,7 +146,20 @@ class BaseAgent(ABC):
         Defaults to the active BYOK provider (Settings), falling back to
         OpenRouter via ``OPENROUTER_API_KEY`` / ``LLM_MODEL`` in .env.
         """
-        return build_chat_model(temperature=0.2, user_id=self.user_id)
+        settings = get_settings()
+        return build_chat_model(
+            temperature=0.2,
+            user_id=self.user_id,
+            context_window=settings.agent_context_window_tokens,
+        )
+
+    def get_summary_llm(self) -> BaseChatModel:
+        """Return the LLM used for conversation compaction (SummarizationMiddleware)."""
+        settings = get_settings()
+        return build_summary_chat_model(
+            user_id=self.user_id,
+            context_window=settings.agent_context_window_tokens,
+        )
 
     # delegate methods to the underlying agent graph
     def invoke(self, *args: Any, **kwargs: Any) -> Any:

@@ -13,7 +13,7 @@ def hybrid_retrieve(repo_id: int | str, workspace: str | Path, query: str, k: in
     return indexer.retrieve(query, k=k)
 
 
-def format_context_pack(result: HybridRetrieveResult) -> str:
+def format_context_pack(result: HybridRetrieveResult, max_snippet_chars: int = 1500) -> str:
     parts: list[str] = [f"# Hybrid context for: {result.query}", ""]
     if result.repo_map:
         parts.append("## Repo map (excerpt)")
@@ -21,9 +21,15 @@ def format_context_pack(result: HybridRetrieveResult) -> str:
         parts.append("")
     parts.append("## Ranked context pack")
     for i, item in enumerate(result.context_pack, 1):
+        snippet = str(item.get("snippet", ""))
+        if len(snippet) > max_snippet_chars:
+            snippet = (
+                snippet[:max_snippet_chars]
+                + f"\n...[snippet truncated {len(snippet) - max_snippet_chars} chars]"
+            )
         parts.append(f"### {i}. {item.get('path')} ({item.get('why')})")
         parts.append("```")
-        parts.append(str(item.get("snippet", "")))
+        parts.append(snippet)
         parts.append("```")
         parts.append("")
     if result.related_files:

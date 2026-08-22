@@ -70,12 +70,52 @@ def build_chat_model(
     temperature: float = 0.2,
     secrets: Optional[LlmSecrets] = None,
     user_id: int | None = None,
+    context_window: int | None = None,
 ) -> BaseChatModel:
     resolved = resolve_llm_config(secrets, user_id=user_id)
-    return _build(resolved, temperature=temperature)
+    return _build(resolved, temperature=temperature, context_window=context_window)
 
 
-def _build(resolved: ResolvedLlm, *, temperature: float) -> BaseChatModel:
+def build_summary_chat_model(
+    *,
+    temperature: float = 0.0,
+    user_id: int | None = None,
+    context_window: int | None = None,
+) -> BaseChatModel:
+    """Build the conversation-compaction model used by SummarizationMiddleware.
+
+    Uses ``agent_summary_model`` (default OpenRouter's free autorouter) when the
+    active provider is OpenRouter (BYOK or env fallback); otherwise reuses the
+    main chat model so summaries work for any BYOK provider.
+    """
+    settings = get_settings()
+    summary_model = (settings.agent_summary_model or "").strip()
+    resolved = resolve_llm_config(user_id=user_id)
+    if summary_model and resolved.provider == "openrouter":
+        return _build(
+            ResolvedLlm(
+                provider="openrouter",
+                model=summary_model,
+                api_key=resolved.api_key,
+                source=resolved.source,
+            ),
+            temperature=temperature,
+            context_window=context_window,
+        )
+    return build_chat_model(
+        temperature=temperature,
+        user_id=user_id,
+        context_window=context_window,
+    )
+
+
+def _build(
+    resolved: ResolvedLlm,
+    *,
+    temperature: float,
+    context_window: int | None = None,
+) -> BaseChatModel:
+    profile = {"max_input_tokens": context_window} if context_window else None
     if resolved.provider == "openai":
         from langchain_openai import ChatOpenAI
 
@@ -83,6 +123,7 @@ def _build(resolved: ResolvedLlm, *, temperature: float) -> BaseChatModel:
             model=resolved.model,
             api_key=resolved.api_key,
             temperature=temperature,
+            profile=profile,
         )
 
     if resolved.provider == "anthropic":
@@ -92,6 +133,7 @@ def _build(resolved: ResolvedLlm, *, temperature: float) -> BaseChatModel:
             model=resolved.model,
             api_key=resolved.api_key,
             temperature=temperature,
+            profile=profile,
         )
 
     if resolved.provider == "google":
@@ -101,6 +143,7 @@ def _build(resolved: ResolvedLlm, *, temperature: float) -> BaseChatModel:
             model=resolved.model,
             google_api_key=resolved.api_key,
             temperature=temperature,
+            profile=profile,
         )
 
     if resolved.provider == "custom":
@@ -111,6 +154,7 @@ def _build(resolved: ResolvedLlm, *, temperature: float) -> BaseChatModel:
             api_key=resolved.api_key,
             base_url=resolved.base_url,
             temperature=temperature,
+            profile=profile,
         )
 
     # openrouter
@@ -118,6 +162,7 @@ def _build(resolved: ResolvedLlm, *, temperature: float) -> BaseChatModel:
         model=resolved.model,
         api_key=resolved.api_key,
         temperature=temperature,
+        profile=profile,
     )
 
 

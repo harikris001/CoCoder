@@ -62,6 +62,7 @@ def _to_detail(run: Run) -> RunOut:
         pm_output=run.pm_output,
         architecture_output=run.architecture_output,
         planner_output=run.planner_output,
+        test_output=run.test_output,
         review_output=run.review_output,
         files_touched=run.files_touched,
         completed_task_ids=run.completed_task_ids,
@@ -243,6 +244,10 @@ async def request_run_changes(
     run.attempt_started_at = None
     run.completed_task_ids = []
     run.review_output = review
+    test = dict(run.test_output or {})
+    if test:
+        test["passed"] = False
+        run.test_output = test
     run.checkpoint_stage = "planner"
     run.retry_count = (run.retry_count or 0) + 1
     await append_run_event(

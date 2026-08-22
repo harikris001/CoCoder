@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, type DiffOut, type RunDetail, type RunEvent } from "../api/client";
+import { AgentOutputDrawer } from "../components/AgentOutputView";
 import {
-  AgentOutputDrawer,
   AGENT_META,
   agentNameForStage,
   type AgentOutputs,
-} from "../components/AgentOutputView";
+} from "../components/agentMeta";
 import {
   BoltIcon,
   CheckIcon,
@@ -30,6 +30,7 @@ const PIPELINE = [
   "architecture",
   "planner",
   "develop",
+  "test",
   "review",
   "awaiting_push",
   "gitops",
@@ -44,6 +45,7 @@ const STAGE_ORDER = [
   "architecture",
   "planner",
   "develop",
+  "test",
   "review",
   "awaiting_push",
   "gitops",
@@ -267,7 +269,11 @@ function IssueRunView({ runId }: { runId: number }) {
   const elapsed = (() => {
     const stored = run?.execution_seconds ?? 0;
     if (!isLive || !run?.attempt_started_at) return formatDuration(stored);
-    const started = new Date(run.attempt_started_at).getTime();
+    const raw = run.attempt_started_at;
+    // Backend stores UTC but SQLite may strip the timezone marker.
+    // Ensure the timestamp is always parsed as UTC.
+    const ts = typeof raw === "string" && !/[Z+\-]\d/.test(raw.slice(-6)) ? raw + "Z" : raw;
+    const started = new Date(ts).getTime();
     if (Number.isNaN(started)) return formatDuration(stored);
     return formatDuration(stored + Math.floor((now - started) / 1000));
   })();
